@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import asyncio
-import locale
 import os
 import psycopg2
 import psycopg2.extras
@@ -24,7 +23,7 @@ if not BOT_TOKEN:
 if not DATABASE_URL:
     print("ПОМИЛKA: DATABASE_URL не знайдено! Перевірте змінні на Render.")
 if not TRIGGER_SECRET:
-    print("ПОМИЛKA: TRIGGER_SECRET не знайдено! Перевірте змінні на Render.")
+    print("ПОМИЛКА: TRIGGER_SECRET не знайдено! Перевірте змінні на Render.")
 if not WEBHOOK_URL:
     print("ПОПЕРЕДЖЕННЯ: WEBHOOK_URL не знайдено! Потрібно для налаштування вебхука.")
 
@@ -53,8 +52,6 @@ application = Application.builder().token(BOT_TOKEN).build() if BOT_TOKEN else N
 
 
 # --- 3. Функції Роботи з Базою Даних (PostgreSQL) ---
-# (Всі твої функції get_db_conn, update_db_schema, init_db, ... залишились без змін)
-# ... (Код з твого файлу) ...
 
 # Connects to the PostgreSQL database.
 def get_db_conn():
@@ -541,7 +538,12 @@ async def check_and_send_reminders(bot: Bot):
             # b. Пройтись по парах
             for pair in pairs_today:
                 try:
-                    pair_time_obj = datetime.strptime(pair['time'], '%H:%M').time()
+                    # Додаємо try/except для парсингу часу
+                    try:
+                        pair_time_obj = datetime.strptime(pair['time'], '%H:%M').time()
+                    except ValueError:
+                        print(f"ПОМИЛКА: Невірний формат часу в парі {pair['id']}: {pair['time']}")
+                        continue
 
                     # c. Якщо час пари == наш цільовий час
                     if pair_time_obj == target_time_obj:
@@ -564,7 +566,7 @@ async def check_and_send_reminders(bot: Bot):
                                 f"{link}"
                             )
 
-                            await bot.send_message(user_id, message, disable_web_page_preview=True)
+                            await bot.send_message(user_id, message, parse_mode="Markdown", disable_web_page_preview=True)
 
                             # iv. Позначаємо як надіслане
                             mark_as_notified(notification_key)
@@ -660,6 +662,19 @@ else:
 
 # Ініціалізуємо БД при старті
 init_db()
+
+# Налаштування вебхука
+async def set_webhook():
+    if WEBHOOK_URL and application:
+        webhook_path = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
+        await application.bot.set_webhook(webhook_path)
+        print(f"Webhook встановлено на: {webhook_path}")
+    else:
+        print("ПОПЕРЕДЖЕННЯ: Webhook не встановлено, бо WEBHOOK_URL відсутній або application - None.")
+
+# Викликаємо налаштування вебхука на старті
+if application:
+    asyncio.run(set_webhook())
 
 # Створюємо ASGI-обгортку для Uvicorn
 # Uvicorn буде шукати саме цю змінну 'app'

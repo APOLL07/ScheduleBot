@@ -4,7 +4,10 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="9d681e7c-c584-4ec8-9849-219575587890" name="Changes" comment="-latest version" />
+    <list default="true" id="9d681e7c-c584-4ec8-9849-219575587890" name="Changes" comment="-latest version">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -84,7 +87,7 @@
       <workItem from="1762436022970" duration="6671000" />
       <workItem from="1762458476092" duration="7188000" />
       <workItem from="1762505677750" duration="11055000" />
-      <workItem from="1762532927404" duration="1129000" />
+      <workItem from="1762532927404" duration="1590000" />
     </task>
     <task id="LOCAL-00001" summary="-latest version">
       <option name="closed" value="true" />
@@ -206,7 +209,23 @@
       <option name="project" value="LOCAL" />
       <updated>1762534028561</updated>
     </task>
-    <option name="localTasksCounter" value="16" />
+    <task id="LOCAL-00016" summary="-latest version">
+      <option name="closed" value="true" />
+      <created>1762534074400</created>
+      <option name="number" value="00016" />
+      <option name="presentableId" value="LOCAL-00016" />
+      <option name="project" value="LOCAL" />
+      <updated>1762534074400</updated>
+    </task>
+    <task id="LOCAL-00017" summary="-latest version">
+      <option name="closed" value="true" />
+      <created>1762534290867</created>
+      <option name="number" value="00017" />
+      <option name="presentableId" value="LOCAL-00017" />
+      <option name="project" value="LOCAL" />
+      <updated>1762534290867</updated>
+    </task>
+    <option name="localTasksCounter" value="18" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -217,7 +236,7 @@
     <option name="LAST_COMMIT_MESSAGE" value="-latest version" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
-    <SUITE FILE_PATH="coverage/myScheduleBot$main.coverage" NAME="main Coverage Results" MODIFIED="1762462322308" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/myScheduleBot$main.coverage" NAME="main Coverage Results" MODIFIED="1762534283040" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/myScheduleBot$init_db.coverage" NAME="init_db Coverage Results" MODIFIED="1762429718526" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
 </project>
