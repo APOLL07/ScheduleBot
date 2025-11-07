@@ -303,15 +303,15 @@ async def del_para_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # --- РАССЫЛКА ---
+# --- РАССЫЛКА ---
 already_notified = {}
 
 
 async def check_schedule_and_broadcast(app: Application):
     bot = app.bot
 
-    # <<< 4. ИСПОЛЬЗУЕМ TIMEZONE >>>
     now = datetime.now(TIMEZONE)
-    current_time_obj = now.time()  # Текущее время как объект
+    current_time_obj = now.time()
 
     try:
         locale.setlocale(locale.LC_TIME, 'uk_UA.UTF-8')
@@ -335,23 +335,22 @@ async def check_schedule_and_broadcast(app: Application):
         para_time_str = para['time']
         para_time_obj = datetime.strptime(para_time_str, "%H:%M").time()
 
-        # Время напоминания
         remind_datetime = (datetime.combine(now.date(), para_time_obj) - timedelta(minutes=REMIND_BEFORE_MINUTES))
         remind_time_obj = remind_datetime.time()
 
-        notification_key = f"{now.date()}_{para_time_str}"  # Ключ теперь включает дату
-
-        # <<< 5. ИЗМЕНЕНА ЛОГИКА ПРОВЕРКИ (САМОЕ ВАЖНОЕ) >>>
-        #
-        # Вместо current_time == remind_time (что не работает с 5-мин интервалом)
-        # мы проверяем, находится ли текущее время В ДИАПАЗОНЕ
-        # (между временем напоминания и временем пары)
+        notification_key = f"{now.date()}_{para_time_str}"
 
         is_time_to_remind = (current_time_obj >= remind_time_obj) and (current_time_obj < para_time_obj)
 
         if is_time_to_remind and (notification_key not in already_notified):
 
             subscribed_users = get_all_subscribed_users()
+
+            # <<< ----------------------------------- >>>
+            # <<< --- ОНОВЛЕНИЙ РЯДОК ДЛЯ ДЕБАГУ --- >>>
+            print(f"[DEBUG] Знайшов {len(subscribed_users)} підписників: {subscribed_users}")
+            # <<< ----------------------------------- >>>
+
             if not subscribed_users:
                 print("[Розсилання] Є пара, але немає передплатників.")
                 continue
@@ -377,8 +376,6 @@ async def check_schedule_and_broadcast(app: Application):
 
             already_notified[notification_key] = True
 
-        # Сбрасываем флаг, если пара уже закончилась (например, через 1 час после)
-        # (Это очищает 'already_notified' для следующего дня)
         end_time_obj = (datetime.combine(now.date(), para_time_obj) + timedelta(hours=1)).time()
         if current_time_obj > end_time_obj and notification_key in already_notified:
             del already_notified[notification_key]
