@@ -4,18 +4,19 @@ import locale
 import os
 import psycopg2
 import psycopg2.extras
+import pytz  # <<< 1. ДОБАВЛЕНО
 from flask import Flask, request as flask_request, abort
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, TypeHandler
 from datetime import datetime, time, timedelta
-from asgiref.wsgi import WsgiToAsgi
+from asgiref.wsgi import WsgiToAsgi  # <<< ДОБАВЛЕНО
+
 # --- НАСТРОЙКА ПЕРЕМЕННЫХ ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 TRIGGER_SECRET = os.environ.get("TRIGGER_SECRET")
 
-# Перевірка, чи завантажились змінні
 if not BOT_TOKEN:
     print("ПОМИЛКА: BOT_TOKEN не знайдено! Перевірте змінні на Render.")
 if not DATABASE_URL:
@@ -26,21 +27,20 @@ if not TRIGGER_SECRET:
 MY_ID = 1084493666
 ADMIN_ID = MY_ID
 REMIND_BEFORE_MINUTES = 10
+TIMEZONE = pytz.timezone('Europe/Kiev')  # <<< 2. УСТАНАВЛИВАЕМ ЧАСОВОЙ ПОЯС
 
 # --- ИНИЦИАЛИЗАЦИЯ FLASK И TELEGRAM ---
 flask_app = Flask(__name__)
-app = WsgiToAsgi(flask_app)
+app = WsgiToAsgi(flask_app)  # <<< ДОБАВЛЕНО (Обертка-переводчик)
 application = Application.builder().token(BOT_TOKEN).build() if BOT_TOKEN else None
-
 _app_initialized = False
-# --- ФУНКЦИИ БАЗЫ ДАННЫХ (ПЕРЕПИСАНЫ ПОД POSTGRESQL) ---
 
-# Вспомогательная функция для подключения к БД
+
+# --- ФУНКЦИИ БАЗЫ ДАННЫХ ---
 def get_db_conn():
     return psycopg2.connect(DATABASE_URL, sslmode='require', cursor_factory=psycopg2.extras.DictCursor)
 
 
-# Инициализирует базу данных и создает таблицы.
 def init_db():
     if not DATABASE_URL:
         print("Неможливо ініціалізувати БД: DATABASE_URL не встановлено.")
@@ -92,7 +92,6 @@ def init_db():
         print(f"ПОМИЛКА init_db: {e}")
 
 
-# Добавляет нову пару до бази даних.
 def add_pair_to_db(user_id: int, day: str, time_str: str, name: str, link: str):
     sql = "INSERT INTO schedule (user_id, day, time, name, link) VALUES (%s, %s, %s, %s, %s)"
     with get_db_conn() as conn:
@@ -101,7 +100,6 @@ def add_pair_to_db(user_id: int, day: str, time_str: str, name: str, link: str):
         conn.commit()
 
 
-# Отримує всі пари з БД для конкретного користувача та дня.
 def get_pairs_for_day(user_id: int, day: str):
     sql = "SELECT * FROM schedule WHERE user_id=%s AND day=%s ORDER BY time ASC"
     with get_db_conn() as conn:
@@ -111,7 +109,6 @@ def get_pairs_for_day(user_id: int, day: str):
     return rows
 
 
-# Отримує абсолютно всі пари для конкретного користувача.
 def get_all_pairs(user_id: int):
     sql = "SELECT * FROM schedule WHERE user_id=%s ORDER BY day, time ASC"
     with get_db_conn() as conn:
@@ -121,7 +118,6 @@ def get_all_pairs(user_id: int):
     return rows
 
 
-# Видаляє пару з бази даних за її ID.
 def delete_pair_from_db(pair_id: int, user_id: int):
     sql = "DELETE FROM schedule WHERE id=%s AND user_id = %s"
     with get_db_conn() as conn:
@@ -132,7 +128,6 @@ def delete_pair_from_db(pair_id: int, user_id: int):
     return changes > 0
 
 
-# Додає нового користувача до БД, якщо він відсутній. (ON CONFLICT - фишка Postgres)
 def add_user_if_not_exists(user_id: int, username: str):
     sql = "INSERT INTO users (user_id, username, subscribed) VALUES (%s, %s, 1) ON CONFLICT (user_id) DO NOTHING"
     with get_db_conn() as conn:
@@ -141,7 +136,6 @@ def add_user_if_not_exists(user_id: int, username: str):
         conn.commit()
 
 
-# Оновлює статус підписки користувача (1 - підписаний, 0 - ні).
 def set_user_subscription(user_id: int, subscribed: int):
     sql = "UPDATE users SET subscribed = %s WHERE user_id = %s"
     with get_db_conn() as conn:
@@ -150,7 +144,6 @@ def set_user_subscription(user_id: int, subscribed: int):
         conn.commit()
 
 
-# Отримує список ID всіх користувачів, які підписані на розсилку.
 def get_all_subscribed_users():
     sql = "SELECT user_id FROM users WHERE subscribed = 1"
     with get_db_conn() as conn:
@@ -160,7 +153,7 @@ def get_all_subscribed_users():
     return user_ids
 
 
-# --- ОБРАБОТЧИКИ КОМАНД TELEGRAM (КОД НЕ ИЗМЕНИЛСЯ) ---
+# --- ОБРАБОТЧИКИ КОМАНД TELEGRAM ---
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -264,12 +257,15 @@ async def show_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_chat.id
 
+    # <<< 3. ИСПОЛЬЗУЕМ TIMEZONE >>>
+    now = datetime.now(TIMEZONE)
+
     try:
         locale.setlocale(locale.LC_TIME, 'uk_UA.UTF-8')
-        current_day = datetime.now().strftime("%A").lower()
+        current_day = now.strftime("%A").lower()
     except Exception:
         days_ua = ['понеділок', 'вівторок', 'середа', 'четвер', 'п’ятниця', 'субота', 'неділя']
-        current_day = days_ua[datetime.now().weekday()]
+        current_day = days_ua[now.weekday()]
 
     pairs_today = get_pairs_for_day(ADMIN_ID, current_day)
 
@@ -306,23 +302,25 @@ async def del_para_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Не знайшов пару з цим ID у загальному розкладі.")
 
 
-# --- РАССЫЛКА (ТЕПЕРЬ ПРИНИМАЕТ 'application' ЧТОБЫ ПОЛУЧИТЬ БОТА) ---
+# --- РАССЫЛКА ---
 already_notified = {}
 
 
 async def check_schedule_and_broadcast(app: Application):
     bot = app.bot
 
+    # <<< 4. ИСПОЛЬЗУЕМ TIMEZONE >>>
+    now = datetime.now(TIMEZONE)
+    current_time_obj = now.time()  # Текущее время как объект
+
     try:
         locale.setlocale(locale.LC_TIME, 'uk_UA.UTF-8')
-        current_day = datetime.now().strftime("%A").lower()
+        current_day = now.strftime("%A").lower()
     except Exception:
         days_ua = ['понеділок', 'вівторок', 'середа', 'четвер', 'п’ятниця', 'субота', 'неділя']
-        current_day = days_ua[datetime.now().weekday()]
+        current_day = days_ua[now.weekday()]
 
-    current_time = datetime.now().strftime("%H:%M")
-
-    print(f"[Розсилання] Перевірка... {current_day} {current_time}")
+    print(f"[Розсилання] Перевірка... {current_day} {now.strftime('%H:%M')} (Часовий пояс: {TIMEZONE})")
 
     try:
         pairs_today = get_pairs_for_day(ADMIN_ID, current_day)
@@ -335,40 +333,54 @@ async def check_schedule_and_broadcast(app: Application):
 
     for para in pairs_today:
         para_time_str = para['time']
-        para_time = datetime.strptime(para_time_str, "%H:%M").time()
-        remind_time = (datetime.combine(datetime.now().date(), para_time) - timedelta(
-            minutes=REMIND_BEFORE_MINUTES)).time()
-        notification_key = f"{current_day}_{para_time_str}"
+        para_time_obj = datetime.strptime(para_time_str, "%H:%M").time()
 
-        if current_time == remind_time.strftime("%H:%M"):
-            if notification_key not in already_notified:
-                subscribed_users = get_all_subscribed_users()
-                if not subscribed_users:
-                    print("[Розсилання] Є пара, але немає передплатників.")
-                    continue
+        # Время напоминания
+        remind_datetime = (datetime.combine(now.date(), para_time_obj) - timedelta(minutes=REMIND_BEFORE_MINUTES))
+        remind_time_obj = remind_datetime.time()
 
-                message = (
-                    f"🔔 **Нагадування!**\n\n"
-                    f"Через {REMIND_BEFORE_MINUTES} хвилин ({para_time_str}) у вас є пара:\n\n"
-                    f"**{para['name']}**\n\n"
-                )
-                if para['link']:
-                    message += f"🔗 [Посилання на пару]({para['link']})"
+        notification_key = f"{now.date()}_{para_time_str}"  # Ключ теперь включает дату
 
-                print(f"[Розсилка] Надсилаю '{para['name']}' {len(subscribed_users)} користувачам...")
+        # <<< 5. ИЗМЕНЕНА ЛОГИКА ПРОВЕРКИ (САМОЕ ВАЖНОЕ) >>>
+        #
+        # Вместо current_time == remind_time (что не работает с 5-мин интервалом)
+        # мы проверяем, находится ли текущее время В ДИАПАЗОНЕ
+        # (между временем напоминания и временем пары)
 
-                for user_id in subscribed_users:
-                    try:
-                        await bot.send_message(
-                            chat_id=user_id, text=message, parse_mode="Markdown")
-                    except Exception as e:
-                        print(f"[Розсилання] Помилка надсилання {user_id}: {e}. Відписую його.")
-                        if "blocked" in str(e) or "deactivated" in str(e):
-                            set_user_subscription(user_id, 0)
+        is_time_to_remind = (current_time_obj >= remind_time_obj) and (current_time_obj < para_time_obj)
 
-                already_notified[notification_key] = True
+        if is_time_to_remind and (notification_key not in already_notified):
 
-        if current_time > para_time.strftime('%H:%M') and notification_key in already_notified:
+            subscribed_users = get_all_subscribed_users()
+            if not subscribed_users:
+                print("[Розсилання] Є пара, але немає передплатників.")
+                continue
+
+            message = (
+                f"🔔 **Нагадування!**\n\n"
+                f"Через {REMIND_BEFORE_MINUTES} хвилин ({para_time_str}) у вас є пара:\n\n"
+                f"**{para['name']}**\n\n"
+            )
+            if para['link']:
+                message += f"🔗 [Посилання на пару]({para['link']})"
+
+            print(f"[Розсилка] Надсилаю '{para['name']}' {len(subscribed_users)} користувачам...")
+
+            for user_id in subscribed_users:
+                try:
+                    await bot.send_message(
+                        chat_id=user_id, text=message, parse_mode="Markdown")
+                except Exception as e:
+                    print(f"[Розсилання] Помилка надсилання {user_id}: {e}. Відписую його.")
+                    if "blocked" in str(e) or "deactivated" in str(e):
+                        set_user_subscription(user_id, 0)
+
+            already_notified[notification_key] = True
+
+        # Сбрасываем флаг, если пара уже закончилась (например, через 1 час после)
+        # (Это очищает 'already_notified' для следующего дня)
+        end_time_obj = (datetime.combine(now.date(), para_time_obj) + timedelta(hours=1)).time()
+        if current_time_obj > end_time_obj and notification_key in already_notified:
             del already_notified[notification_key]
 
 
@@ -381,11 +393,12 @@ def index():
 
 @flask_app.route(f"/trigger_check/{TRIGGER_SECRET}", methods=["POST", "GET"])
 async def trigger_check():
-    # <<< ДОДАЙТЕ ЦІ 3 РЯДКИ >>>
     global _app_initialized
     if not _app_initialized:
-        await application.initialize()
-        _app_initialized = True
+        if application:
+            print("Ініціалізація Application (з trigger_check)...")
+            await application.initialize()
+            _app_initialized = True
 
     if application:
         await check_schedule_and_broadcast(application)
@@ -397,12 +410,14 @@ async def trigger_check():
 async def webhook():
     global _app_initialized
     if not _app_initialized:
-        await application.initialize()
-        _app_initialized = True
+        if application:
+            print("Ініціалізація Application (з webhook)...")
+            await application.initialize()
+            _app_initialized = True
+
     if not application:
         return "Bot not initialized", 500
     try:
-        # 2. ВИПРАВЛЕНО: Використовуємо de_json замість from_json
         update_json = flask_request.get_json()
         update = Update.de_json(update_json, application.bot)
         await application.process_update(update)
@@ -414,17 +429,13 @@ async def webhook():
 
 # --- ГЛАВНАЯ ФУНКЦИЯ ---
 
-# 1. ВИПРАВЛЕНО: Викликаємо init_db() тут, щоб Gunicorn її побачив
-# Налаштовуємо локаль (з фоллбэком)
 try:
     locale.setlocale(locale.LC_ALL, "uk_UA.UTF-8")
 except locale.Error:
     print("ПОПЕРЕДЖЕННЯ: Локаль 'uk_UA.UTF-8' не встановлена. Використовую фоллбэк.")
 
-# Ініціалізуємо БД при старті
 init_db()
 
-# Додаємо всі обробники команд
 if application:
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
@@ -440,11 +451,9 @@ else:
     print("ПОМИЛКА ЗАПУСКУ: 'application' не було створено. Перевірте BOT_TOKEN.")
 
 
-# Ця функція main() більше не використовується Gunicorn, але ми її залишаємо
 def main():
     pass
 
 
-# Эта проверка нужна, чтобы gunicorn мог найти flask_app
 if __name__ == "__main__":
     main()
