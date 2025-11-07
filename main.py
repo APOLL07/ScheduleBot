@@ -32,7 +32,7 @@ flask_app = Flask(__name__)
 app = WsgiToAsgi(flask_app)
 application = Application.builder().token(BOT_TOKEN).build() if BOT_TOKEN else None
 
-
+_app_initialized = False
 # --- ФУНКЦИИ БАЗЫ ДАННЫХ (ПЕРЕПИСАНЫ ПОД POSTGRESQL) ---
 
 # Вспомогательная функция для подключения к БД
@@ -381,6 +381,12 @@ def index():
 
 @flask_app.route(f"/trigger_check/{TRIGGER_SECRET}", methods=["POST", "GET"])
 async def trigger_check():
+    # <<< ДОДАЙТЕ ЦІ 3 РЯДКИ >>>
+    global _app_initialized
+    if not _app_initialized:
+        await application.initialize()
+        _app_initialized = True
+
     if application:
         await check_schedule_and_broadcast(application)
         return "Check triggered", 200
@@ -389,6 +395,10 @@ async def trigger_check():
 
 @flask_app.route("/webhook", methods=["POST"])
 async def webhook():
+    global _app_initialized
+    if not _app_initialized:
+        await application.initialize()
+        _app_initialized = True
     if not application:
         return "Bot not initialized", 500
     try:
