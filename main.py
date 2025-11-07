@@ -10,8 +10,6 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, TypeHandler
 from datetime import datetime, time, timedelta
 from asgiref.wsgi import WsgiToAsgi
-
-# --- НАСТРОЙКА ПЕРЕМЕННИХ ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
