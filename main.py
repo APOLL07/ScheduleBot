@@ -19,9 +19,9 @@ TRIGGER_SECRET = os.environ.get("TRIGGER_SECRET")
 
 # Перевірки наявності змінних
 if not BOT_TOKEN:
-    print("ПОМИЛKA: BOT_TOKEN не знайдено! Перевірте змінні на Render.")
+    print("ПОМИЛКА: BOT_TOKEN не знайдено! Перевірте змінні на Render.")
 if not DATABASE_URL:
-    print("ПОМИЛKA: DATABASE_URL не знайдено! Перевірте змінні на Render.")
+    print("ПОМИЛКА: DATABASE_URL не знайдено! Перевірте змінні на Render.")
 if not TRIGGER_SECRET:
     print("ПОМИЛКА: TRIGGER_SECRET не знайдено! Перевірте змінні на Render.")
 if not WEBHOOK_URL:
@@ -60,19 +60,33 @@ def get_db_conn():
 
 # Updates the database schema (adds columns/tables) without deleting data.
 def update_db_schema():
+    # Separate operations to avoid transaction abortion affecting others
+    update_week_type_column()
+    create_sent_notifications_table()
+
+
+def update_week_type_column():
     conn = get_db_conn()
     try:
         with conn.cursor() as cursor:
-            try:
-                cursor.execute(
-                    "ALTER TABLE schedule ADD COLUMN week_type TEXT NOT NULL DEFAULT 'кожна'")
-                print("Оновлено схему: Додано 'week_type' до 'schedule'")
-            except psycopg2.Error as e:
-                if e.pgcode == '42701':  # 42701 = duplicate_column
-                    pass
-                else:
-                    raise
+            cursor.execute(
+                "ALTER TABLE schedule ADD COLUMN IF NOT EXISTS week_type TEXT NOT NULL DEFAULT 'кожна'")
+            print("Оновлено схему: Додано 'week_type' до 'schedule' (якщо не існувало)")
+        conn.commit()
+    except psycopg2.Error as e:
+        if e.pgcode == '42701':  # 42701 = duplicate_column
+            print("Схема: 'week_type' вже існує, пропускаємо.")
+        else:
+            print(f"ПОМИЛКА ALTER week_type: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
 
+
+def create_sent_notifications_table():
+    conn = get_db_conn()
+    try:
+        with conn.cursor() as cursor:
             cursor.execute('''CREATE TABLE IF NOT EXISTS sent_notifications
                               (
                                   notification_key
@@ -88,10 +102,9 @@ def update_db_schema():
                                   NULL
                               )''')
             print("Оновлено схему: Таблиця 'sent_notifications' готова.")
-
         conn.commit()
     except Exception as e:
-        print(f"ПОМИЛКА оновлення схеми: {e}")
+        print(f"ПОМИЛКА CREATE sent_notifications: {e}")
         conn.rollback()
     finally:
         conn.close()
@@ -663,7 +676,7 @@ else:
 # Ініціалізуємо БД при старті
 init_db()
 
-# Налаштування вебхука
+# Налаштування вебхука (асинхронна версія)
 async def set_webhook():
     if WEBHOOK_URL and application:
         webhook_path = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
@@ -672,9 +685,21 @@ async def set_webhook():
     else:
         print("ПОПЕРЕДЖЕННЯ: Webhook не встановлено, бо WEBHOOK_URL відсутній або application - None.")
 
-# Викликаємо налаштування вебхука на старті
-if application:
-    asyncio.run(set_webhook())
+# Синхронна обгортка для виклику на рівні модуля (створює новий event loop)
+def set_webhook_sync():
+    if not application:
+        return
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(set_webhook())
+    except Exception as e:
+        print(f"ПОМИЛКА налаштування вебхука: {e}")
+    finally:
+        loop.close()
+
+# Викликаємо налаштування вебхука на старті (синхронно)
+set_webhook_sync()
 
 # Створюємо ASGI-обгортку для Uvicorn
 # Uvicorn буде шукати саме цю змінну 'app'
