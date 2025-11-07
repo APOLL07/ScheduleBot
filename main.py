@@ -425,6 +425,8 @@ if application:
     application.add_handler(CommandHandler("add", add_para_command))
     application.add_handler(CommandHandler("del", del_para_command))
     print("Бот готов к работе (режим Webhook).")
+    print("Ініціалізація Application...")
+    asyncio.run(application.initialize())
 else:
     print("ПОМИЛКА ЗАПУСКУ: 'application' не було створено. Перевірте BOT_TOKEN.")
 
