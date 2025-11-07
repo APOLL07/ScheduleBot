@@ -25,7 +25,7 @@ if not DATABASE_URL:
 if not TRIGGER_SECRET:
     print("ПОМИЛКА: TRIGGER_SECRET не знайдено! Перевірте змінні на Render.")
 if not WEBHOOK_URL:
-    print("ПОПЕРЕДЖЕННЯ: WEBHOOK_URL не знайдено! Потрібно для налаштування вебхука.")
+    print("ПОМИЛКА: WEBHOOK_URL не знайдено! Він потрібен для set_webhook.")
 
 MY_ID = 1084493666
 ADMIN_ID = MY_ID
@@ -48,10 +48,25 @@ DAY_OF_WEEK_UKR = {
 
 # --- 2. Ініціалізація Додатків ---
 flask_app = Flask(__name__)
-application = Application.builder().token(BOT_TOKEN).build() if BOT_TOKEN else None
+
+# Ця функція буде викликана автоматично завдяки .post_init()
+async def set_webhook(application: Application):
+    if WEBHOOK_URL:
+        webhook_path = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
+        await application.bot.set_webhook(
+            webhook_path,
+            allowed_updates=Update.ALL_TYPES # Переконайся, що бот приймає всі типи оновлень
+        )
+        print(f"Webhook ВСТАНОВЛЕНО (через post_init) на: {webhook_path}")
+    else:
+        print("ПОМИЛКА: Webhook не встановлено, бо WEBHOOK_URL відсутній.")
+
+# ЗМІНЕНО: Додано .post_init(set_webhook)
+application = Application.builder().token(BOT_TOKEN).post_init(set_webhook).build() if BOT_TOKEN else None
 
 
 # --- 3. Функції Роботи з Базою Даних (PostgreSQL) ---
+# ... (весь твій код з get_db_conn ... до ... cleanup_old_notifications) ...
 
 # Connects to the PostgreSQL database.
 def get_db_conn():
@@ -274,6 +289,7 @@ def cleanup_old_notifications():
 
 
 # --- 4. Логіка Бота (Допоміжні функції) ---
+# ... (весь твій код з get_current_week_type ... до ... check_and_send_reminders) ...
 
 def get_current_week_type():
     """Calculates the current week type (e.g., 'odd'/'even') based on the reference date."""
@@ -636,8 +652,6 @@ async def trigger_reminders():
         print("ПОМИЛКА: 'application' не ініціалізовано у /trigger.")
         return "Bot not initialized", 500
 
-    # Проста перевірка секрету (можна передавати в заголовках для більшої безпеки)
-    # Наприклад, `Authorization: Bearer <YOUR_TRIGGER_SECRET>`
     auth_header = flask_request.headers.get('Authorization')
     if auth_header != f"Bearer {TRIGGER_SECRET}":
         print(f"ПОМИЛКА: Невірний секрет у /trigger. Отримано: {auth_header}")
@@ -646,7 +660,6 @@ async def trigger_reminders():
     print("[Trigger] Отримано запит на перевірку нагадувань...")
     try:
         # Запускаємо асинхронну функцію у фоні, щоб не блокувати відповідь
-        # Це важливо, якщо перевірка триває довго
         asyncio.create_task(check_and_send_reminders(application.bot))
         return "Trigger processed", 200
     except Exception as e:
@@ -676,30 +689,6 @@ else:
 # Ініціалізуємо БД при старті
 init_db()
 
-# Налаштування вебхука (асинхронна версія)
-async def set_webhook():
-    if WEBHOOK_URL and application:
-        webhook_path = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
-        await application.bot.set_webhook(webhook_path)
-        print(f"Webhook встановлено на: {webhook_path}")
-    else:
-        print("ПОПЕРЕДЖЕННЯ: Webhook не встановлено, бо WEBHOOK_URL відсутній або application - None.")
-
-# Синхронна обгортка для виклику на рівні модуля (створює новий event loop)
-def set_webhook_sync():
-    if not application:
-        return
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(set_webhook())
-    except Exception as e:
-        print(f"ПОМИЛКА налаштування вебхука: {e}")
-    finally:
-        loop.close()
-
-# Викликаємо налаштування вебхука на старті (синхронно)
-set_webhook_sync()
 
 # Створюємо ASGI-обгортку для Uvicorn
 # Uvicorn буде шукати саме цю змінну 'app'
