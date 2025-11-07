@@ -3,3 +3,4 @@ psycopg2-binary
 flask[async]
 gunicorn
 uvicorn
+asgiref

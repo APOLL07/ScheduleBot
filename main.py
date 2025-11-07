@@ -8,7 +8,7 @@ from flask import Flask, request as flask_request, abort
 from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, TypeHandler
 from datetime import datetime, time, timedelta
-
+from asgiref.wsgi import WsgiToAsgi
 # --- НАСТРОЙКА ПЕРЕМЕННЫХ ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -29,6 +29,7 @@ REMIND_BEFORE_MINUTES = 10
 
 # --- ИНИЦИАЛИЗАЦИЯ FLASK И TELEGRAM ---
 flask_app = Flask(__name__)
+app = WsgiToAsgi(flask_app)
 application = Application.builder().token(BOT_TOKEN).build() if BOT_TOKEN else None
 
 
