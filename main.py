@@ -219,8 +219,21 @@ async def add_para_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     day, time_str, name = context.args[0], context.args[1], context.args[2]
     link = context.args[3] if len(context.args) >= 4 else None
 
+    # <<< --- НОВА ПЕРЕВІРКА ЧАСУ --- >>>
     try:
+        # Намагаємося перетворити час, щоб перевірити формат
+        datetime.strptime(time_str, "%H:%M")
+    except ValueError:
+        # Якщо не виходить - лаємося і виходимо
+        await update.message.reply_text(
+            f"❌ Помилка: Неправильний формат часу: '{time_str}'.\nБудь ласка, використовуйте формат `HH:MM` (наприклад, `13:05`).")
+        return
+    # <<< --- КІНЕЦЬ ПЕРЕВІРКИ --- >>>
+
+    try:
+        # Нормалізуємо апостроф
         day_normalized = day.lower().replace("’", "'")
+
         add_pair_to_db(ADMIN_ID, day_normalized, time_str, name, link)
         await update.message.reply_text(f"✅ Додав пару до *загальний* розклад.")
     except Exception as e:
