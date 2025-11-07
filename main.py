@@ -18,6 +18,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 TRIGGER_SECRET = os.environ.get("TRIGGER_SECRET")
 
+# Перевірки наявності змінних
 if not BOT_TOKEN:
     print("ПОМИЛKA: BOT_TOKEN не знайдено! Перевірте змінні на Render.")
 if not DATABASE_URL:
@@ -35,22 +36,33 @@ TIMEZONE = pytz.timezone('Europe/Kiev')
 REFERENCE_DATE = datetime(2025, 9, 1).date()
 REFERENCE_WEEK_TYPE = "непарний"
 
-# --- 2. Ініціалізація Додатків ---
-# (Application та Flask ініціалізуються тут, щоб бути доступними глобально)
+# Словник для перекладу дня тижня (з datetime.weekday())
+DAY_OF_WEEK_UKR = {
+    0: "понеділок",
+    1: "вівторок",
+    2: "середа",
+    3: "четвер",
+    4: "п'ятниця",
+    5: "субота",
+    6: "неділя"
+}
 
+# --- 2. Ініціалізація Додатків ---
 flask_app = Flask(__name__)
 application = Application.builder().token(BOT_TOKEN).build() if BOT_TOKEN else None
 
 
 # --- 3. Функції Роботи з Базою Даних (PostgreSQL) ---
+# (Всі твої функції get_db_conn, update_db_schema, init_db, ... залишились без змін)
+# ... (Код з твого файлу) ...
 
+# Connects to the PostgreSQL database.
 def get_db_conn():
-    """Connects to the PostgreSQL database."""
     return psycopg2.connect(DATABASE_URL, sslmode='require', cursor_factory=psycopg2.extras.DictCursor)
 
 
+# Updates the database schema (adds columns/tables) without deleting data.
 def update_db_schema():
-    """Updates the database schema (adds columns/tables) without deleting data."""
     conn = get_db_conn()
     try:
         with conn.cursor() as cursor:
@@ -88,8 +100,8 @@ def update_db_schema():
         conn.close()
 
 
+# Initializes the core database tables if they do not exist.
 def init_db():
-    """Initializes the core database tables if they do not exist."""
     if not DATABASE_URL:
         print("Неможливо ініціалізувати БД: DATABASE_URL не встановлено.")
         return
@@ -149,17 +161,17 @@ def init_db():
         print(f"ПОМИЛКА init_db: {e}")
 
 
+# Adds a new schedule entry to the database.
 def add_pair_to_db(user_id: int, day: str, time_str: str, name: str, link: str, week_type: str):
-    """Adds a new schedule entry to the database."""
     sql = "INSERT INTO schedule (user_id, day, time, name, link, week_type) VALUES (%s, %s, %s, %s, %s, %s)"
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(sql, (user_id, day, time_str, name, link, week_type))
+            cursor.execute(sql, (user_id, day.lower(), time_str, name, link, week_type))
         conn.commit()
 
 
+# Fetches all schedule entries for a specific user, day, and week type.
 def get_pairs_for_day(user_id: int, day: str, week_type: str):
-    """Fetches all schedule entries for a specific user, day, and week type."""
     sql = "SELECT * FROM schedule WHERE user_id=%s AND day=%s AND (week_type='кожна' OR week_type=%s) ORDER BY time ASC"
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
@@ -168,8 +180,8 @@ def get_pairs_for_day(user_id: int, day: str, week_type: str):
     return rows
 
 
+# Fetches all schedule entries for a specific user.
 def get_all_pairs(user_id: int):
-    """Fetches all schedule entries for a specific user."""
     sql = "SELECT * FROM schedule WHERE user_id=%s ORDER BY week_type, day, time ASC"
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
@@ -178,8 +190,8 @@ def get_all_pairs(user_id: int):
     return rows
 
 
+# Deletes a specific schedule entry by its ID and user ID.
 def delete_pair_from_db(pair_id: int, user_id: int):
-    """Deletes a specific schedule entry by its ID and user ID."""
     sql = "DELETE FROM schedule WHERE id=%s AND user_id = %s"
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
@@ -189,8 +201,8 @@ def delete_pair_from_db(pair_id: int, user_id: int):
     return changes > 0
 
 
+# Adds a new user to the users table if they don't already exist.
 def add_user_if_not_exists(user_id: int, username: str):
-    """Adds a new user to the users table if they don't already exist."""
     sql = "INSERT INTO users (user_id, username, subscribed) VALUES (%s, %s, 1) ON CONFLICT (user_id) DO NOTHING"
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
@@ -198,8 +210,8 @@ def add_user_if_not_exists(user_id: int, username: str):
         conn.commit()
 
 
+# Updates the subscription status (1 or 0) for a user.
 def set_user_subscription(user_id: int, subscribed: int):
-    """Updates the subscription status (1 or 0) for a user."""
     sql = "UPDATE users SET subscribed = %s WHERE user_id = %s"
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
@@ -207,8 +219,8 @@ def set_user_subscription(user_id: int, subscribed: int):
         conn.commit()
 
 
+# Retrieves a list of user IDs for all subscribed users.
 def get_all_subscribed_users():
-    """Retrieves a list of user IDs for all subscribed users."""
     sql = "SELECT user_id FROM users WHERE subscribed = 1"
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
@@ -217,8 +229,8 @@ def get_all_subscribed_users():
     return user_ids
 
 
+# Checks if a notification has already been sent today.
 def check_if_notified(notification_key: str):
-    """Checks if a notification has already been sent today."""
     sql = "SELECT 1 FROM sent_notifications WHERE notification_key = %s"
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
@@ -226,8 +238,8 @@ def check_if_notified(notification_key: str):
             return cursor.fetchone() is not None
 
 
+# Marks a notification as sent in the database.
 def mark_as_notified(notification_key: str):
-    """Marks a notification as sent in the database."""
     sql = "INSERT INTO sent_notifications (notification_key, sent_at) VALUES (%s, %s)"
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
@@ -235,8 +247,8 @@ def mark_as_notified(notification_key: str):
         conn.commit()
 
 
+# Removes notification records older than 2 days.
 def cleanup_old_notifications():
-    """Removes notification records older than 2 days."""
     sql = "DELETE FROM sent_notifications WHERE sent_at < %s"
     try:
         with get_db_conn() as conn:
@@ -265,7 +277,39 @@ def get_current_week_type():
         return "парний" if REFERENCE_WEEK_TYPE == "непарний" else "непарний"
 
 
-# --- 5. Обробники Команд Telegram ---
+def format_pairs_message(pairs, title):
+    """Допоміжна функція для гарного форматування списку пар."""
+    if not pairs:
+        return f"{title}\n\n🎉 Пар немає!"
+
+    message = f"{title}\n"
+    current_week_type = ""
+    current_day = ""
+
+    for pair in pairs:
+        # Додаємо заголовки для типу тижня (тільки для /all)
+        if pair['week_type'] != current_week_type and 'весь' in title.lower():
+            current_week_type = pair['week_type']
+            message += f"\n--- **{current_week_type.upper()} ТИЖДЕНЬ** ---\n"
+            current_day = ""  # Скидаємо день при зміні тижня
+
+        # Додаємо заголовки для дня
+        if pair['day'] != current_day:
+            current_day = pair['day']
+            message += f"\n**{current_day.capitalize()}**\n"
+
+        # Форматуємо саму пару
+        link = f" ([Link]({pair['link']}))" if pair['link'] and pair['link'] != 'None' else ""
+        message += f"  `{pair['time']}` - {pair['name']}{link}\n"
+
+        # Додаємо ID для адміна в /all
+        if 'весь' in title.lower():
+            message += f"     *(ID: `{pair['id']}`)*\n"
+
+    return message
+
+
+# --- 5. Обробники Команд Telegram (РЕАЛІЗОВАНІ) ---
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command, registers the user, and shows a welcome message."""
@@ -294,7 +338,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "**Довідка по командам бота:**\n\n"
         "**/start** - Початок роботи та вітання.\n"
-        "**/all** - Показати *весь* розклад на тиждень.\n"
+        "**/all** - Показати *весь* розклад на тиждень (з ID для видалення).\n"
         "**/today** - Показати розклад на *сьогодні* (з урахуванням парного/непарного тижня).\n"
         "**/subscribe** - Увімкнути сповіщення про пари (за замовчуванням).\n"
         "**/unsubscribe** - Вимкнути сповіщення.\n"
@@ -305,6 +349,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "\n**Панель адміну:**\n"
             "**/add** `[тип] [день] [час] [назва] [посилання]`\n"
             "*Типи: `парна`, `непарна`, `кожна`*\n"
+            "*День: `понеділок`, `вівторок` і т.д.*\n"
+            "*Час: `08:30`, `10:00`*\n"
+            "*Посилання: `https://...` або `None`*\n"
             "*(Приклад: /add парна понеділок 10:00 Математика https://...)*\n\n"
             "**/del** `[ID]`\n"
             "*(ID можна побачити у команді /all)*"
@@ -324,62 +371,219 @@ async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("❌ Сповіщення вимкнено.")
 
 
-# --- ЗАГЛУШКИ: Тобі потрібно реалізувати ці функції ---
-
 async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """(ЗАГЛУШКА) Повинна показувати весь розклад."""
-    await update.message.reply_text("Функція /all ще не реалізована.")
-    # Тут має бути твій код для показу всього розкладу (використовуй get_all_pairs)
+    """Показує ВЕСЬ розклад, згрупований по тижнях та днях."""
+    user_id = update.effective_chat.id
+    try:
+        all_pairs = get_all_pairs(user_id)
+        message = format_pairs_message(all_pairs, "🗓️ Весь розклад")
+        await update.message.reply_text(message, parse_mode="Markdown", disable_web_page_preview=True)
+    except Exception as e:
+        print(f"ПОМИЛКА в /all: {e}")
+        await update.message.reply_text(f"Сталася помилка при отриманні розкладу: {e}")
 
 
 async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """(ЗАГЛУШКА) Повинна показувати розклад на сьогодні."""
-    await update.message.reply_text("Функція /today ще не реалізована.")
-    # Тут має бути твій код для показу розкладу на сьогодні (використовуй get_pairs_for_day та get_current_week_type)
+    """Показує розклад на СЬОГОДНІ, враховуючи тип тижня."""
+    user_id = update.effective_chat.id
+    try:
+        now = datetime.now(TIMEZONE)
+        current_day_name = DAY_OF_WEEK_UKR[now.weekday()]
+        current_week = get_current_week_type()
+
+        pairs_today = get_pairs_for_day(user_id, current_day_name, current_week)
+
+        title = f"🔵 Розклад на сьогодні ({current_day_name.capitalize()}, {current_week} тиждень)"
+        message = format_pairs_message(pairs_today, title)
+
+        await update.message.reply_text(message, parse_mode="Markdown", disable_web_page_preview=True)
+    except Exception as e:
+        print(f"ПОМИЛКА в /today: {e}")
+        await update.message.reply_text(f"Сталася помилка при отриманні розкладу на сьогодні: {e}")
 
 
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """(ЗАГLУШКА) Повинна додавати нову пару (тільки для адміна)."""
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("Ця команда доступна лише адміну.")
+    """Додає нову пару (тільки для адміна)."""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Ця команда доступна лише адміну.")
         return
-    await update.message.reply_text("Функція /add ще не реалізована.")
-    # Тут має бути твій код для парсингу context.args та виклику add_pair_to_db
+
+    args = context.args
+    if len(args) < 4:
+        await update.message.reply_text(
+            "Помилка: Недостатньо аргументів.\n"
+            "Формат: /add `[тип] [день] [час] [назва] [посилання (необов'язково)]`\n"
+            "Приклад: /add `кожна понеділок 08:30 Англійська https://...`",
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        # Валідація вхідних даних
+        week_type = args[0].lower()
+        if week_type not in ['парна', 'непарна', 'кожна']:
+            await update.message.reply_text("Помилка: невірний 'тип'. Має бути `парна`, `непарна` або `кожна`.")
+            return
+
+        day = args[1].lower()
+        if day not in DAY_OF_WEEK_UKR.values():
+            await update.message.reply_text(
+                f"Помилка: невірний 'день'. Має бути один з: {', '.join(DAY_OF_WEEK_UKR.values())}")
+            return
+
+        time_str = args[2]
+        try:
+            # Просто перевіряємо формат
+            datetime.strptime(time_str, '%H:%M')
+        except ValueError:
+            await update.message.reply_text("Помилка: невірний 'час'. Має бути у форматі `HH:MM` (напр. `08:30`).")
+            return
+
+        # Назва може містити пробіли, тому беремо все до останнього аргументу
+        # Якщо 5+ аргументів, останній - посилання. Якщо 4 - посилання немає.
+        if len(args) >= 5:
+            link = args[-1]
+            name = " ".join(args[3:-1])
+            if not link.startswith("http") and link.lower() != 'none':
+                # Якщо 5-й аргумент не схожий на посилання, це частина назви
+                name = " ".join(args[3:])
+                link = "None"
+        else:
+            name = " ".join(args[3:])
+            link = "None"
+
+        # Додаємо в БД
+        add_pair_to_db(user_id, day, time_str, name, link, week_type)
+
+        await update.message.reply_text(
+            f"✅ *Пару додано:*\n"
+            f"Тип: {week_type}\n"
+            f"День: {day}\n"
+            f"Час: {time_str}\n"
+            f"Назва: {name}\n"
+            f"Посилання: {link}",
+            parse_mode="Markdown",
+            disable_web_page_preview=True
+        )
+
+    except Exception as e:
+        print(f"ПОМИЛКА в /add: {e}")
+        await update.message.reply_text(f"Сталася невідома помилка: {e}")
 
 
 async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """(ЗАГЛУШКА) Повинна видаляти пару (тільки для адміна)."""
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("Ця команда доступна лише адміну.")
+    """Видаляє пару за ID (тільки для адміна)."""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Ця команда доступна лише адміну.")
         return
-    await update.message.reply_text("Функція /del ще не реалізована.")
-    # Тут має бути твій код для парсингу context.args та виклику delete_pair_from_db
+
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text("Помилка: Вкажіть ID пари для видалення.\n"
+                                        "Приклад: /del `12`\n"
+                                        "(ID можна побачити у команді /all)")
+        return
+
+    try:
+        pair_id = int(context.args[0])
+
+        # Видаляємо з БД
+        if delete_pair_from_db(pair_id, user_id):
+            await update.message.reply_text(f"✅ Пару з ID `{pair_id}` видалено.")
+        else:
+            await update.message.reply_text(f"❌ Не вдалося знайти пару з ID `{pair_id}`, що належить вам.")
+
+    except ValueError:
+        await update.message.reply_text("Помилка: ID має бути числом.")
+    except Exception as e:
+        print(f"ПОМИЛКА в /del: {e}")
+        await update.message.reply_text(f"Сталася невідома помилка: {e}")
 
 
 # --- 6. Логіка Нагадувань (для Cron) ---
 
 async def check_and_send_reminders(bot: Bot):
     """
-    (ЗАГЛУШКА) Головна функція для Cron-завдання.
-    Має перевіряти розклад та надсилати нагадування.
+    Головна функція для Cron-завдання.
+    Перевіряє розклад та надсилає нагадування.
     """
-    print("[check_and_send_reminders] Запуск перевірки нагадувань...")
-    # 1. Отримати поточний час, день тижня, тип тижня.
-    # 2. Отримати всіх підписаних користувачів (get_all_subscribed_users).
-    # 3. Для кожного користувача:
-    #    a. Отримати його розклад на сьогодні (get_pairs_for_day).
-    #    b. Пройтись по парах.
-    #    c. Якщо час пари (мінус REMIND_BEFORE_MINUTES) == поточний час:
-    #       i. Сформувати ключ (notification_key = f"{user_id}_{pair_id}_{today}").
-    #       ii. Перевірити, чи вже надсилали (check_if_notified).
-    #       iii. Якщо не надсилали:
-    #           - Надіслати повідомлення (bot.send_message).
-    #           - Позначити як надіслане (mark_as_notified).
-    # 4. Запустити очистку старих нотифікацій (cleanup_old_notifications).
+    print(f"[check_and_send_reminders] Запуск перевірки нагадувань... Час: {datetime.now(TIMEZONE)}")
 
-    # Поки що просто надсилаємо повідомлення адміну, що Cron спрацював
-    await bot.send_message(ADMIN_ID,
-                           "⏰ (TEST) Cron-завдання спрацювало! Функція `check_and_send_reminders` була викликана.")
+    try:
+        # 1. Отримуємо всі необхідні дані про поточний час
+        now = datetime.now(TIMEZONE)
+        # Час, коли має початися пара (зараз + X хвилин)
+        notification_time_dt = now + timedelta(minutes=REMIND_BEFORE_MINUTES)
+
+        # Округлюємо час до хвилини
+        target_time_obj = notification_time_dt.time().replace(second=0, microsecond=0)
+
+        current_day_name = DAY_OF_WEEK_UKR[now.weekday()]
+        current_week_type = get_current_week_type()
+
+        print(f"[Check] Шукаємо пари на {current_day_name}, {current_week_type} о {target_time_obj.strftime('%H:%M')}")
+
+        # 2. Отримуємо всіх підписаних користувачів
+        subscribed_users = get_all_subscribed_users()
+        if not subscribed_users:
+            print("[Check] Немає підписаних користувачів.")
+            return
+
+        # 3. Для кожного користувача...
+        for user_id in subscribed_users:
+            # a. Отримати його розклад на сьогодні
+            pairs_today = get_pairs_for_day(user_id, current_day_name, current_week_type)
+
+            if not pairs_today:
+                continue  # У цього користувача сьогодні пар немає
+
+            # b. Пройтись по парах
+            for pair in pairs_today:
+                try:
+                    pair_time_obj = datetime.strptime(pair['time'], '%H:%M').time()
+
+                    # c. Якщо час пари == наш цільовий час
+                    if pair_time_obj == target_time_obj:
+                        print(f"[Check] Знайдено пару для {user_id}! ID: {pair['id']}")
+
+                        # i. Формуємо ключ (щоб не слати 100 разів, якщо cron бігає кожну сек)
+                        # Ключ унікальний для пари, користувача та дня
+                        notification_key = f"{user_id}_{pair['id']}_{now.strftime('%Y-%m-%d')}"
+
+                        # ii. Перевіряємо, чи вже надсилали
+                        if not check_if_notified(notification_key):
+                            print(f"[Check] Надсилаємо сповіщення {notification_key}...")
+
+                            # iii. Надсилаємо повідомлення
+                            link = f"\n\nПосилання: {pair['link']}" if pair['link'] and pair['link'] != 'None' else ""
+                            message = (
+                                f"🔔 **Нагадування!**\n\n"
+                                f"Через {REMIND_BEFORE_MINUTES} хвилин ({pair['time']}) почнеться пара:\n"
+                                f"**{pair['name']}**"
+                                f"{link}"
+                            )
+
+                            await bot.send_message(user_id, message, disable_web_page_preview=True)
+
+                            # iv. Позначаємо як надіслане
+                            mark_as_notified(notification_key)
+                        else:
+                            print(f"[Check] Сповіщення {notification_key} вже було надіслано.")
+
+                except Exception as e_pair:
+                    print(f"ПОМИЛКА обробки пари {pair['id']} для user {user_id}: {e_pair}")
+
+        # 4. Очищуємо старі записи про нотифікації
+        cleanup_old_notifications()
+
+    except Exception as e:
+        print(f"КРИТИЧНА ПОМИЛКА в check_and_send_reminders: {e}")
+        # Повідомляємо адміну про проблему
+        try:
+            await bot.send_message(ADMIN_ID, f"ПОМИЛКА в check_and_send_reminders:\n{e}")
+        except Exception as e_admin:
+            print(f"Не вдалося навіть надіслати повідомлення адміну: {e_admin}")
 
 
 # --- 7. Маршрути Flask (Вебхуки) ---
@@ -387,6 +591,7 @@ async def check_and_send_reminders(bot: Bot):
 @flask_app.route('/')
 def health_check():
     """Маршрут для перевірок Render (прибирає 404)."""
+    print("Health check / OK")
     return "OK, Service is alive!", 200
 
 
@@ -416,14 +621,18 @@ async def trigger_reminders():
         print("ПОМИЛКА: 'application' не ініціалізовано у /trigger.")
         return "Bot not initialized", 500
 
-    secret = flask_request.headers.get('Authorization')
-    if secret != f"Bearer {TRIGGER_SECRET}":
-        print(f"ПОМИЛКА: Невірний секрет у /trigger. Отримано: {secret}")
-        return "Forbidden", 403  # Або abort(403)
+    # Проста перевірка секрету (можна передавати в заголовках для більшої безпеки)
+    # Наприклад, `Authorization: Bearer <YOUR_TRIGGER_SECRET>`
+    auth_header = flask_request.headers.get('Authorization')
+    if auth_header != f"Bearer {TRIGGER_SECRET}":
+        print(f"ПОМИЛКА: Невірний секрет у /trigger. Отримано: {auth_header}")
+        return "Forbidden", 403
 
     print("[Trigger] Отримано запит на перевірку нагадувань...")
     try:
-        await check_and_send_reminders(application.bot)
+        # Запускаємо асинхронну функцію у фоні, щоб не блокувати відповідь
+        # Це важливо, якщо перевірка триває довго
+        asyncio.create_task(check_and_send_reminders(application.bot))
         return "Trigger processed", 200
     except Exception as e:
         print(f"ПОМИЛКА тригера: {e}")
@@ -439,7 +648,7 @@ if application:
     application.add_handler(CommandHandler("subscribe", subscribe_command))
     application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
 
-    # Реєстрація нових команд (поки що "заглушок")
+    # Реєстрація реалізованих команд
     application.add_handler(CommandHandler("all", all_command))
     application.add_handler(CommandHandler("today", today_command))
     application.add_handler(CommandHandler("add", add_command))
@@ -455,3 +664,5 @@ init_db()
 # Створюємо ASGI-обгортку для Uvicorn
 # Uvicorn буде шукати саме цю змінну 'app'
 app = WsgiToAsgi(flask_app)
+
+print("Додаток готовий до запуску через Uvicorn.")
