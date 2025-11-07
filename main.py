@@ -10,6 +10,7 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, TypeHandler
 from datetime import datetime, time, timedelta
 from asgiref.wsgi import WsgiToAsgi
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
@@ -27,6 +28,9 @@ ADMIN_ID = MY_ID
 REMIND_BEFORE_MINUTES = 10
 TIMEZONE = pytz.timezone('Europe/Kiev')
 
+REFERENCE_DATE = datetime(2025, 9, 1).date()
+REFERENCE_WEEK_TYPE = "непарний"
+
 flask_app = Flask(__name__)
 app = WsgiToAsgi(flask_app)
 application = Application.builder().token(BOT_TOKEN).build() if BOT_TOKEN else None
@@ -38,7 +42,46 @@ def get_db_conn():
     return psycopg2.connect(DATABASE_URL, sslmode='require', cursor_factory=psycopg2.extras.DictCursor)
 
 
-# Initializes the database tables (schedule and users) if they don't exist.
+# Updates the database schema (adds columns/tables) without deleting data.
+def update_db_schema():
+    conn = get_db_conn()
+    try:
+        with conn.cursor() as cursor:
+            try:
+                cursor.execute(
+                    "ALTER TABLE schedule ADD COLUMN week_type TEXT NOT NULL DEFAULT 'кожна'")
+                print("Оновлено схему: Додано 'week_type' до 'schedule'")
+            except psycopg2.Error as e:
+                if e.pgcode == '42701':
+                    pass
+                else:
+                    raise
+
+            cursor.execute('''CREATE TABLE IF NOT EXISTS sent_notifications
+                              (
+                                  notification_key
+                                  TEXT
+                                  PRIMARY
+                                  KEY,
+                                  sent_at
+                                  TIMESTAMP
+                                  WITH
+                                  TIME
+                                  ZONE
+                                  NOT
+                                  NULL
+                              )''')
+            print("Оновлено схему: Таблиця 'sent_notifications' готова.")
+
+        conn.commit()
+    except Exception as e:
+        print(f"ПОМИЛКА оновлення схеми: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+# Initializes the core database tables if they do not exist.
 def init_db():
     if not DATABASE_URL:
         print("Неможливо ініціалізувати БД: DATABASE_URL не встановлено.")
@@ -47,71 +90,80 @@ def init_db():
         with get_db_conn() as conn:
             with conn.cursor() as cursor:
                 cursor.execute('''CREATE TABLE IF NOT EXISTS schedule
-                                 (
-                                     id
-                                     SERIAL
-                                     PRIMARY
-                                     KEY,
-                                     user_id
-                                     BIGINT
-                                     NOT
-                                     NULL,
-                                     day
-                                     TEXT
-                                     NOT
-                                     NULL,
-                                     time
-                                     TEXT
-                                     NOT
-                                     NULL,
-                                     name
-                                     TEXT
-                                     NOT
-                                     NULL,
-                                     link
-                                     TEXT
-                                 )''')
+                                  (
+                                      id
+                                      SERIAL
+                                      PRIMARY
+                                      KEY,
+                                      user_id
+                                      BIGINT
+                                      NOT
+                                      NULL,
+                                      day
+                                      TEXT
+                                      NOT
+                                      NULL,
+                                      time
+                                      TEXT
+                                      NOT
+                                      NULL,
+                                      name
+                                      TEXT
+                                      NOT
+                                      NULL,
+                                      link
+                                      TEXT,
+                                      week_type
+                                      TEXT
+                                      NOT
+                                      NULL
+                                      DEFAULT
+                                      'кожна'
+                                  )''')
                 cursor.execute('''CREATE TABLE IF NOT EXISTS users
-                                 (
-                                     user_id
-                                     BIGINT
-                                     PRIMARY
-                                     KEY,
-                                     username
-                                     TEXT,
-                                     subscribed
-                                     INTEGER
-                                     DEFAULT
-                                     1
-                                 )''')
+                                  (
+                                      user_id
+                                      BIGINT
+                                      PRIMARY
+                                      KEY,
+                                      username
+                                      TEXT,
+                                      subscribed
+                                      INTEGER
+                                      DEFAULT
+                                      1
+                                  )''')
             conn.commit()
         print("Базу даних ініціалізовано (PostgreSQL)")
+
+        update_db_schema()
+
     except Exception as e:
         print(f"ПОМИЛКА init_db: {e}")
 
 
-# Adds a new schedule entry (pair) to the database.
-def add_pair_to_db(user_id: int, day: str, time_str: str, name: str, link: str):
-    sql = "INSERT INTO schedule (user_id, day, time, name, link) VALUES (%s, %s, %s, %s, %s)"
+# Adds a new schedule entry to the database.
+def add_pair_to_db(user_id: int, day: str, time_str: str, name: str, link: str, week_type: str):
+    sql = "INSERT INTO schedule (user_id, day, time, name, link, week_type) VALUES (%s, %s, %s, %s, %s, %s)"
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(sql, (user_id, day, time_str, name, link))
+            cursor.execute(sql, (user_id, day, time_str, name, link, week_type))
         conn.commit()
 
 
-# Fetches all schedule entries for a specific user and day.
-def get_pairs_for_day(user_id: int, day: str):
-    sql = "SELECT * FROM schedule WHERE user_id=%s AND day=%s ORDER BY time ASC"
+# Fetches all schedule entries for a specific user, day, and week type.
+def get_pairs_for_day(user_id: int, day: str, week_type: str):
+    sql = "SELECT * FROM schedule WHERE user_id=%s AND day=%s AND (week_type='кожна' OR week_type=%s) ORDER BY time ASC"
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(sql, (user_id, day.lower()))
+            cursor.execute(sql, (user_id, day.lower(), week_type))
             rows = cursor.fetchall()
     return rows
 
 
 # Fetches all schedule entries for a specific user.
 def get_all_pairs(user_id: int):
-    sql = "SELECT * FROM schedule WHERE user_id=%s ORDER BY day, time ASC"
+    sql = "SELECT * FROM schedule WHERE user_id=%s ORDER BY week_type, day, time ASC"
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
             cursor.execute(sql, (user_id,))
@@ -158,6 +210,52 @@ def get_all_subscribed_users():
     return user_ids
 
 
+# Checks if a notification has already been sent today.
+def check_if_notified(notification_key: str):
+    sql = "SELECT 1 FROM sent_notifications WHERE notification_key = %s"
+    with get_db_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (notification_key,))
+            return cursor.fetchone() is not None
+
+
+# Marks a notification as sent in the database.
+def mark_as_notified(notification_key: str):
+    sql = "INSERT INTO sent_notifications (notification_key, sent_at) VALUES (%s, %s)"
+    with get_db_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, (notification_key, datetime.now(TIMEZONE)))
+        conn.commit()
+
+
+# Removes notification records older than 2 days.
+def cleanup_old_notifications():
+    sql = "DELETE FROM sent_notifications WHERE sent_at < %s"
+    try:
+        with get_db_conn() as conn:
+            with conn.cursor() as cursor:
+                cutoff_date = datetime.now(TIMEZONE) - timedelta(days=2)
+                cursor.execute(sql, (cutoff_date,))
+                deleted_count = cursor.rowcount
+            conn.commit()
+            if deleted_count > 0:
+                print(f"[Cleanup] Видалено {deleted_count} старих сповіщень.")
+    except Exception as e:
+        print(f"ПОМИЛКА cleanup_old_notifications: {e}")
+
+
+# Calculates the current week type (e.g., 'odd'/'even') based on the reference date.
+def get_current_week_type():
+    today = datetime.now(TIMEZONE).date()
+    days_diff = (today - REFERENCE_DATE).days
+    weeks_diff = days_diff // 7
+
+    if weeks_diff % 2 == 0:
+        return REFERENCE_WEEK_TYPE
+    else:
+        return "парний" if REFERENCE_WEEK_TYPE == "непарний" else "непарний"
+
+
 # Handles the /start command, registers the user, and shows a welcome message.
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -174,7 +272,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     if user.id == ADMIN_ID:
         text += ("\n**Панель адміну:**\n"
-                 "/add `[день] [час] [назва] [посилання(опціонально)]`\n"
+                 "/add `[тип] [день] [час] [назва] [посилання]`\n"
                  "/del `[номер]`")
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -186,7 +284,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "**Довідка по командам бота:**\n\n"
         "**/start** - Початок роботи та вітання.\n"
         "**/all** - Показати *весь* розклад на тиждень.\n"
-        "**/today** - Показати розклад на *сьогодні*.\n"
+        "**/today** - Показати розклад на *сьогодні* (з урахуванням парного/непарного тижня).\n"
         "**/subscribe** - Увімкнути сповіщення про пари (за замовчуванням).\n"
         "**/unsubscribe** - Вимкнути сповіщення.\n"
         "**/help** - Показати це повідомлення.\n"
@@ -194,8 +292,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id == ADMIN_ID:
         text += (
             "\n**Панель адміну:**\n"
-            "**/add** `[день] [час] [назва] [посилання]`\n"
-            "*(Приклад: /add понеділок 10:00 Математика https://...)*\n\n"
+            "**/add** `[тип] [день] [час] [назва] [посилання]`\n"
+            "*Типи: `парна`, `непарна`, `кожна`*\n"
+            "*(Приклад: /add парна понеділок 10:00 Математика https://...)*\n\n"
             "**/del** `[ID]`\n"
             "*(ID можна побачити у команді /all)*"
         )
@@ -208,266 +307,4 @@ async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Сповіщення увімкнено!")
 
 
-# Handles the /unsubscribe command, disabling notifications for the user.
-async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_user_subscription(update.effective_chat.id, 0)
-    await update.message.reply_text("❌ Сповіщення вимкнено.")
-
-
-# Handles the /add command (admin-only) to add a new pair.
-async def add_para_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_chat.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("❌ Це команда тільки для адміністратора.")
-        return
-    if len(context.args) < 3:
-        await update.message.reply_text("Формат: `/add [день] [час] [назва] [посилання]`", parse_mode='Markdown')
-        return
-
-    day, time_str, name = context.args[0], context.args[1], context.args[2]
-    link = context.args[3] if len(context.args) >= 4 else None
-
-    try:
-        datetime.strptime(time_str, "%H:%M")
-    except ValueError:
-        await update.message.reply_text(
-            f"❌ Помилка: Неправильний формат часу: '{time_str}'.\nБудь ласка, використовуйте формат `HH:MM` (наприклад, `13:05`).")
-        return
-
-    try:
-        day_normalized = day.lower().replace("’", "'")
-
-        add_pair_to_db(ADMIN_ID, day_normalized, time_str, name, link)
-        await update.message.reply_text(f"✅ Додано пару до *загального* розкладу.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Помилка додавання: {e}")
-
-
-# Handles the /all command, displaying the full schedule.
-async def show_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_chat.id
-    all_pairs = get_all_pairs(ADMIN_ID)
-    if not all_pairs:
-        await update.message.reply_text("Розклад поки що порожній.")
-        return
-
-    message = "📅 **Загальний розклад:**\n"
-    current_day = ""
-    day_counter = 1
-
-    for para in all_pairs:
-        if para['day'] != current_day:
-            current_day = para['day']
-            message += f"\n**{current_day.capitalize()}**\n"
-            day_counter = 1
-
-        prefix = f"`[ID: {para['id']}]` " if user_id == ADMIN_ID else ""
-        message += f"{prefix}{day_counter}. `{para['time']}` - {para['name']}\n"
-
-        if para['link']:
-            message += f" [Посилання]({para['link']})\n"
-
-        day_counter += 1
-
-    await update.message.reply_text(message, parse_mode="Markdown", disable_web_page_preview=True)
-
-
-# Handles the /today command, displaying the schedule for the current day.
-async def show_today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_chat.id
-
-    now = datetime.now(TIMEZONE)
-
-    try:
-        locale.setlocale(locale.LC_TIME, 'uk_UA.UTF-8')
-        current_day = now.strftime("%A").lower()
-    except Exception:
-        days_ua = ['понеділок', 'вівторок', 'середа', 'четвер', 'п’ятниця', 'субота', 'неділя']
-        current_day = days_ua[now.weekday()]
-    current_day_normalized = current_day.replace("’", "'")
-    pairs_today = get_pairs_for_day(ADMIN_ID, current_day_normalized)
-
-    if not pairs_today:
-        await update.message.reply_text(f"Сьогодні ({current_day.capitalize()}) пар немає. Відпочивайте! 🥳")
-        return
-
-    message = f"📅 **Розклад на сьогодні ({current_day.capitalize()}):**\n\n"
-
-    for i, para in enumerate(pairs_today):
-        prefix = f"`[ID: {para['id']}]` " if user_id == ADMIN_ID else ""
-        message += f"{prefix}{i + 1}. `{para['time']}` - {para['name']}\n"
-
-        if para['link']:
-            message += f" [Посилання]({para['link']})\n"
-
-    await update.message.reply_text(message, parse_mode="Markdown", disable_web_page_preview=True)
-
-
-# Handles the /del command (admin-only) to delete a pair by its ID.
-async def del_para_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_chat.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("❌ Це команда тільки для адміністратора.")
-        return
-    if not context.args or not context.args[0].isdigit():
-        await update.message.reply_text("Потрібно вказати номер (ID) пари. Приклад: `/del 12`")
-        return
-
-    pair_id = int(context.args[0])
-
-    if delete_pair_from_db(pair_id, ADMIN_ID):
-        await update.message.reply_text(f"✅ Видалено пару з ID: {pair_id}")
-    else:
-        await update.message.reply_text(f"❌ Не знайдено пару з цим ID у загальному розкладі.")
-
-
-already_notified = {}
-
-
-# Periodically checks the schedule and sends reminders to subscribed users.
-async def check_schedule_and_broadcast(app: Application):
-    bot = app.bot
-
-    now = datetime.now(TIMEZONE)
-    current_time_obj = now.time()
-
-    try:
-        locale.setlocale(locale.LC_TIME, 'uk_UA.UTF-8')
-        current_day = now.strftime("%A").lower()
-    except Exception:
-        days_ua = ['понеділок', 'вівторок', 'середа', 'четвер', 'п’ятниця', 'субота', 'неділя']
-        current_day = days_ua[now.weekday()]
-
-    current_day_normalized = current_day.replace("’", "'")
-
-    print(f"[Розсилання] Перевірка... {current_day} {now.strftime('%H:%M')} (Часовий пояс: {TIMEZONE})")
-
-    try:
-        pairs_today = get_pairs_for_day(ADMIN_ID, current_day_normalized)
-    except Exception as e:
-        print(f"ПОМИЛКА check_schedule_and_broadcast (get_pairs_for_day): {e}")
-        return
-
-    if not pairs_today:
-        return
-
-    for para in pairs_today:
-        para_time_str = para['time']
-        para_time_obj = datetime.strptime(para_time_str, "%H:%M").time()
-
-        remind_datetime = (datetime.combine(now.date(), para_time_obj) - timedelta(minutes=REMIND_BEFORE_MINUTES))
-        remind_time_obj = remind_datetime.time()
-
-        notification_key = f"{now.date()}_{para_time_str}"
-
-        is_time_to_remind = (current_time_obj >= remind_time_obj) and (current_time_obj < para_time_obj)
-
-        if is_time_to_remind and (notification_key not in already_notified):
-
-            subscribed_users = get_all_subscribed_users()
-
-            print(f"[DEBUG] Знайдено {len(subscribed_users)} підписників: {subscribed_users}")
-
-            if not subscribed_users:
-                print("[Розсилання] Є пара, але немає підписників.")
-                continue
-
-            message = (
-                f"🔔 **Нагадування!**\n\n"
-                f"Через декілька хвилин ({para_time_str}) у вас є пара:\n\n"
-                f"**{para['name']}**\n\n"
-            )
-            if para['link']:
-                message += f"🔗 [Посилання на пару]({para['link']})"
-
-            print(f"[Розсилання] Надсилаю '{para['name']}' {len(subscribed_users)} користувачам...")
-
-            for user_id in subscribed_users:
-                try:
-                    await bot.send_message(
-                        chat_id=user_id, text=message, parse_mode="Markdown")
-                except Exception as e:
-                    print(f"[Розсилання] Помилка надсилання {user_id}: {e}. Відписую користувача.")
-                    if "blocked" in str(e) or "deactivated" in str(e):
-                        set_user_subscription(user_id, 0)
-
-            already_notified[notification_key] = True
-
-        end_time_obj = (datetime.combine(now.date(), para_time_obj) + timedelta(hours=1)).time()
-        if current_time_obj > end_time_obj and notification_key in already_notified:
-            del already_notified[notification_key]
-
-
-# A simple health check endpoint.
-@flask_app.route("/", methods=["GET"])
-def index():
-    return "Бот працює!", 200
-
-
-# A secure endpoint (cron job target) to trigger the broadcast check.
-@flask_app.route(f"/trigger_check/{TRIGGER_SECRET}", methods=["POST", "GET"])
-async def trigger_check():
-    global _app_initialized
-    if not _app_initialized:
-        if application:
-            print("Ініціалізація Application (з trigger_check)...")
-            await application.initialize()
-            _app_initialized = True
-
-    if application:
-        await check_schedule_and_broadcast(application)
-        return "Перевірку запущено", 200
-    return "Бот не ініціалізовано", 500
-
-
-# The main Telegram webhook endpoint to receive updates.
-@flask_app.route("/webhook", methods=["POST"])
-async def webhook():
-    global _app_initialized
-    if not _app_initialized:
-        if application:
-            print("Ініціалізація Application (з webhook)...")
-            await application.initialize()
-            _app_initialized = True
-
-    if not application:
-        return "Бот не ініціалізовано", 500
-    try:
-        update_json = flask_request.get_json()
-        update = Update.de_json(update_json, application.bot)
-        await application.process_update(update)
-        return "", 200
-    except Exception as e:
-        print(f"Помилка у вебхуку: {e}")
-        return "", 500
-
-
-try:
-    locale.setlocale(locale.LC_ALL, "uk_UA.UTF-8")
-except locale.Error:
-    print("ПОПЕРЕДЖЕННЯ: Локаль 'uk_UA.UTF-8' не встановлена. Використовую фоллбэк.")
-
-init_db()
-
-if application:
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("subscribe", subscribe_command))
-    application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
-    application.add_handler(CommandHandler("all", show_all_command))
-    application.add_handler(CommandHandler("today", show_today_command))
-    application.add_handler(CommandHandler("day", show_today_command))
-    application.add_handler(CommandHandler("add", add_para_command))
-    application.add_handler(CommandHandler("del", del_para_command))
-    print("Бот готовий до роботи (режим Webhook).")
-else:
-    print("ПОМИЛКА ЗАПУСКУ: 'application' не було створено. Перевірте BOT_TOKEN.")
-
-
-# Main entry point (currently unused in webhook mode).
-def main():
-    pass
-
-
-if __name__ == "__main__":
-    main()
+# Handles the /unsubscribe command, disabling notifications for
