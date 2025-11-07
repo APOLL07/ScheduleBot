@@ -220,7 +220,8 @@ async def add_para_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link = context.args[3] if len(context.args) >= 4 else None
 
     try:
-        add_pair_to_db(ADMIN_ID, day.lower(), time_str, name, link)
+        day_normalized = day.lower().replace("’", "'")
+        add_pair_to_db(ADMIN_ID, day_normalized, time_str, name, link)
         await update.message.reply_text(f"✅ Додав пару до *загальний* розклад.")
     except Exception as e:
         await update.message.reply_text(f"❌ Помилка додавання: {e}")
@@ -266,8 +267,8 @@ async def show_today_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception:
         days_ua = ['понеділок', 'вівторок', 'середа', 'четвер', 'п’ятниця', 'субота', 'неділя']
         current_day = days_ua[now.weekday()]
-
-    pairs_today = get_pairs_for_day(ADMIN_ID, current_day)
+    current_day_normalized = current_day.replace("’", "'")
+    pairs_today = get_pairs_for_day(ADMIN_ID, current_day_normalized)
 
     if not pairs_today:
         await update.message.reply_text(f"Сьогодні ({current_day.capitalize()}) пар немає. Відпочивайте! 🥳")
@@ -320,10 +321,12 @@ async def check_schedule_and_broadcast(app: Application):
         days_ua = ['понеділок', 'вівторок', 'середа', 'четвер', 'п’ятниця', 'субота', 'неділя']
         current_day = days_ua[now.weekday()]
 
+    current_day_normalized = current_day.replace("’", "'")
+
     print(f"[Розсилання] Перевірка... {current_day} {now.strftime('%H:%M')} (Часовий пояс: {TIMEZONE})")
 
     try:
-        pairs_today = get_pairs_for_day(ADMIN_ID, current_day)
+        pairs_today = get_pairs_for_day(ADMIN_ID, current_day_normalized)
     except Exception as e:
         print(f"ПОМИЛКА check_schedule_and_broadcast (get_pairs_for_day): {e}")
         return
@@ -379,6 +382,7 @@ async def check_schedule_and_broadcast(app: Application):
         end_time_obj = (datetime.combine(now.date(), para_time_obj) + timedelta(hours=1)).time()
         if current_time_obj > end_time_obj and notification_key in already_notified:
             del already_notified[notification_key]
+
 
 
 # --- FLASK WEBHOOK-СЕРВЕР ---
