@@ -49,24 +49,36 @@ DAY_OF_WEEK_UKR = {
 # --- 2. Ініціалізація Додатків ---
 flask_app = Flask(__name__)
 
-# Ця функція буде викликана автоматично завдяки .post_init()
+# === ЗМІНЕНО: ДОДАНО TRY/EXCEPT ДЛЯ ДІАГНОСТИКИ ===
 async def set_webhook(application: Application):
-    if WEBHOOK_URL:
-        webhook_path = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
-        await application.bot.set_webhook(
-            webhook_path,
-            allowed_updates=Update.ALL_TYPES # Переконайся, що бот приймає всі типи оновлень
-        )
-        print(f"Webhook ВСТАНОВЛЕНО (через post_init) на: {webhook_path}")
-    else:
-        print("ПОМИЛКА: Webhook не встановлено, бо WEBHOOK_URL відсутній.")
+    """Ця функція викликається автоматично завдяки .post_init()"""
+    try:
+        if WEBHOOK_URL:
+            webhook_path = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
+            await application.bot.set_webhook(
+                webhook_path,
+                allowed_updates=Update.ALL_TYPES
+            )
+            print(f"============================================================")
+            print(f"✅ Webhook ВСТАНОВЛЕНО (через post_init) на: {webhook_path}")
+            print(f"============================================================")
+        else:
+            print(f"============================================================")
+            print("❌ ПОМИЛКА: Webhook НЕ ВСТАНОВЛЕНО, бо WEBHOOK_URL відсутній.")
+            print(f"============================================================")
+    except Exception as e:
+        print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print(f"🔥 КРИТИЧНА ПОМИЛКА під час set_webhook: {e}")
+        print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+# === КІНЕЦЬ ЗМІН ===
 
-# ЗМІНЕНО: Додано .post_init(set_webhook)
+# Додано .post_init(set_webhook)
 application = Application.builder().token(BOT_TOKEN).post_init(set_webhook).build() if BOT_TOKEN else None
 
 
 # --- 3. Функції Роботи з Базою Даних (PostgreSQL) ---
 # ... (весь твій код з get_db_conn ... до ... cleanup_old_notifications) ...
+# (Я не буду його тут дублювати, скопіюй його зі свого файлу)
 
 # Connects to the PostgreSQL database.
 def get_db_conn():
