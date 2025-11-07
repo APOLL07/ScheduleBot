@@ -9,6 +9,7 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, TypeHandler
 from datetime import datetime, time, timedelta
 from asgiref.wsgi import WsgiToAsgi
+from contextlib import asynccontextmanager  # === ДОДАНО НОВИЙ ІМПОРТ ===
 
 # --- 1. Налаштування та Змінні ---
 
@@ -47,42 +48,17 @@ DAY_OF_WEEK_UKR = {
 }
 
 # --- 2. Ініціалізація Додатків ---
-flask_app = Flask(__name__)
-
-# === ЗМІНЕНО: ДОДАНО TRY/EXCEPT ДЛЯ ДІАГНОСТИКИ ===
-async def set_webhook(application: Application):
-    """Ця функція викликається автоматично завдяки .post_init()"""
-    try:
-        if WEBHOOK_URL:
-            webhook_path = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
-            await application.bot.set_webhook(
-                webhook_path,
-                allowed_updates=Update.ALL_TYPES
-            )
-            print(f"============================================================")
-            print(f"✅ Webhook ВСТАНОВЛЕНО (через post_init) на: {webhook_path}")
-            print(f"============================================================")
-        else:
-            print(f"============================================================")
-            print("❌ ПОМИЛКА: Webhook НЕ ВСТАНОВЛЕНО, бо WEBHOOK_URL відсутній.")
-            print(f"============================================================")
-    except Exception as e:
-        print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        print(f"🔥 КРИТИЧНА ПОМИЛКА під час set_webhook: {e}")
-        print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-# === КІНЕЦЬ ЗМІН ===
-
-# Додано .post_init(set_webhook)
-application = Application.builder().token(BOT_TOKEN).post_init(set_webhook).build() if BOT_TOKEN else None
+# === ЗМІНЕНО: Ми ініціалізуємо їх пізніше, всередині 'lifespan' ===
+flask_app = None
+application = None
 
 
 # --- 3. Функції Роботи з Базою Даних (PostgreSQL) ---
-# ... (весь твій код з get_db_conn ... до ... cleanup_old_notifications) ...
-# (Я не буду його тут дублювати, скопіюй його зі свого файлу)
+# (Тут починається твій код, який я повернув)
 
 # Connects to the PostgreSQL database.
 def get_db_conn():
-    return psycopg2.connect(DATABASE_URL, sslmode='require', cursor_factory=psycopg2.extras.DictCursor)
+    return psycopg2.connect(DATABASE_URL, sslmode='require', cursor_factory=psycogreen2.extras.DictCursor)
 
 
 # Updates the database schema (adds columns/tables) without deleting data.
@@ -301,7 +277,6 @@ def cleanup_old_notifications():
 
 
 # --- 4. Логіка Бота (Допоміжні функції) ---
-# ... (весь твій код з get_current_week_type ... до ... check_and_send_reminders) ...
 
 def get_current_week_type():
     """Calculates the current week type (e.g., 'odd'/'even') based on the reference date."""
@@ -607,7 +582,8 @@ async def check_and_send_reminders(bot: Bot):
                                 f"{link}"
                             )
 
-                            await bot.send_message(user_id, message, parse_mode="Markdown", disable_web_page_preview=True)
+                            await bot.send_message(user_id, message, parse_mode="Markdown",
+                                                   disable_web_page_preview=True)
 
                             # iv. Позначаємо як надіслане
                             mark_as_notified(notification_key)
@@ -629,16 +605,80 @@ async def check_and_send_reminders(bot: Bot):
             print(f"Не вдалося навіть надіслати повідомлення адміну: {e_admin}")
 
 
-# --- 7. Маршрути Flask (Вебхуки) ---
+# === НОВИЙ БЛОК: Функція "Життєвого циклу" (Lifespan) ===
+@asynccontextmanager
+async def lifespan(app: Flask):
+    """
+    Ця функція запускається Uvicorn ОДИН РАЗ під час старту.
+    Це правильне місце для ініціалізації та налаштування вебхука.
+    """
+    global application, flask_app
+    print("Lifespan: Запуск...")
 
-@flask_app.route('/')
+    # Ініціалізуємо тут, а не на глобальному рівні
+    flask_app = app
+    application = Application.builder().token(BOT_TOKEN).build() if BOT_TOKEN else None
+
+    if application:
+        # 1. Реєструємо обробники
+        print("Lifespan: Реєстрація обробників...")
+        application.add_handler(CommandHandler("start", start_command))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("subscribe", subscribe_command))
+        application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
+        application.add_handler(CommandHandler("all", all_command))
+        application.add_handler(CommandHandler("today", today_command))
+        application.add_handler(CommandHandler("add", add_command))
+        application.add_handler(CommandHandler("del", del_command))
+        print("Lifespan: Обробники зареєстровані.")
+
+        # 2. Встановлюємо вебхук
+        try:
+            if WEBHOOK_URL:
+                webhook_path = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
+                await application.bot.set_webhook(
+                    webhook_path,
+                    allowed_updates=Update.ALL_TYPES
+                )
+                print(f"============================================================")
+                print(f"✅ Lifespan: Webhook ВСТАНОВЛЕНО на: {webhook_path}")
+                print(f"============================================================")
+            else:
+                print("❌ Lifespan: ПОМИЛКА, WEBHOOK_URL не знайдено.")
+        except Exception as e:
+            print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            print(f"🔥 Lifespan: КРИТИЧНА ПОМИЛКА під час set_webhook: {e}")
+            print(f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    else:
+        print("❌ Lifespan: ПОМИЛКА, 'application' не було створено (немає BOT_TOKEN?)")
+
+    # 3. Ініціалізуємо БД
+    init_db()
+
+    print("Lifespan: Запуск завершено, передаємо керування Uvicorn.")
+    yield  # Додаток працює тут
+
+    # Код після yield виконується при зупинці сервера
+    print("Lifespan: Зупинка...")
+
+
+# === КІНЕЦЬ НОВОГО БЛОКУ ===
+
+
+# --- 7. Маршрути Flask (Вебхуки) ---
+# === ЗМІНЕНО: Створюємо Flask APP тут і передаємо в lifespan ===
+# Uvicorn буде шукати саме цю змінну 'app'
+app = Flask(__name__)
+
+
+@app.route('/')
 def health_check():
     """Маршрут для перевірок Render (прибирає 404)."""
     print("Health check / OK")
     return "OK, Service is alive!", 200
 
 
-@flask_app.route(f'/webhook/{BOT_TOKEN}', methods=['POST'])
+@app.route(f'/webhook/{BOT_TOKEN}', methods=['POST'])
 async def webhook():
     """Обробляє вхідні оновлення від Telegram."""
     if not application:
@@ -654,7 +694,7 @@ async def webhook():
         return "Error", 500
 
 
-@flask_app.route(f'/trigger/{TRIGGER_SECRET}', methods=['POST'])
+@app.route(f'/trigger/{TRIGGER_SECRET}', methods=['POST'])
 async def trigger_reminders():
     """
     Маршрут для Cron-завдання (Render Cron Job).
@@ -681,29 +721,38 @@ async def trigger_reminders():
 
 # --- 8. Реєстрація Обробників та Запуск ---
 
-if application:
-    print("Реєстрація обробників команд...")
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("subscribe", subscribe_command))
-    application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
-
-    # Реєстрація реалізованих команд
-    application.add_handler(CommandHandler("all", all_command))
-    application.add_handler(CommandHandler("today", today_command))
-    application.add_handler(CommandHandler("add", add_command))
-    application.add_handler(CommandHandler("del", del_command))
-
-    print("Обробники зареєстровані.")
-else:
-    print("ПОМИЛКА: Не вдалося зареєструвати обробники, 'application' - None.")
-
-# Ініціалізуємо БД при старті
-init_db()
-
+# === ЗМІНЕНО: Ми перенесли всю логіку в 'lifespan' ===
+# === А 'app' перетворили на ASGI-обгортку з підтримкою lifespan ===
 
 # Створюємо ASGI-обгортку для Uvicorn
-# Uvicorn буде шукати саме цю змінну 'app'
-app = WsgiToAsgi(flask_app)
+wsgi_app = WsgiToAsgi(app)
 
-print("Додаток готовий до запуску через Uvicorn.")
+
+@asynccontextmanager
+async def combined_lifespan(app_instance):
+    """
+    Комбінує наш 'lifespan' з 'lifespan' Flask-додатку.
+    """
+    async with lifespan(app_instance):  # Запускаємо наш lifespan
+        yield  # Передаємо керування
+
+
+# Це головна змінна 'app', яку Uvicorn має знайти
+# Вона об'єднує Flask (через wsgi_app) та наш lifespan
+class LifespanMiddleware:
+    def __init__(self, app, lifespan_context):
+        self.app = app
+        self.lifespan_context = lifespan_context
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] == 'lifespan':
+            async with self.lifespan_context(self.app):
+                await self.app(scope, receive, send)
+        else:
+            await self.app(scope, receive, send)
+
+
+# Uvicorn буде запускати ЦЕ:
+app = LifespanMiddleware(wsgi_app, lifespan_context=combined_lifespan)
+
+print("Додаток налаштовано з 'lifespan' та готовий до запуску.")
