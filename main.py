@@ -9,7 +9,7 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, TypeHandler
 from datetime import datetime, time, timedelta
 from asgiref.wsgi import WsgiToAsgi
-from contextlib import asynccontextmanager  # === ДОДАНО НОВИЙ ІМПОРТ ===
+from contextlib import asynccontextmanager
 
 # --- 1. Налаштування та Змінні ---
 
@@ -48,17 +48,16 @@ DAY_OF_WEEK_UKR = {
 }
 
 # --- 2. Ініціалізація Додатків ---
-# === ЗМІНЕНО: Ми ініціалізуємо їх пізніше, всередині 'lifespan' ===
 flask_app = None
 application = None
 
 
 # --- 3. Функції Роботи з Базою Даних (PostgreSQL) ---
-# (Тут починається твій код, який я повернув)
 
 # Connects to the PostgreSQL database.
 def get_db_conn():
-    return psycopg2.connect(DATABASE_URL, sslmode='require', cursor_factory=psycogreen2.extras.DictCursor)
+    # === ОСЬ ВИПРАВЛЕННЯ: psycogreen2 -> psycopg2 ===
+    return psycopg2.connect(DATABASE_URL, sslmode='require', cursor_factory=psycopg2.extras.DictCursor)
 
 
 # Updates the database schema (adds columns/tables) without deleting data.
