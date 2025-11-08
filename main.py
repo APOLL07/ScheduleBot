@@ -43,6 +43,18 @@ DAY_OF_WEEK_UKR = {
     6: "неділя"
 }
 
+# === ИЗМЕНЕНО: Добавлен список для правильной сортировки ===
+# Этот список определяет порядок сортировки дней
+DAY_ORDER_LIST = [
+    "понеділок",
+    "вівторок",
+    "середа",
+    "четвер",
+    "п'ятниця",
+    "субота",
+    "неділя"
+]
+
 flask_app = None
 application = None
 
@@ -187,7 +199,19 @@ def get_pairs_for_day(user_id: int, day: str, week_type: str):
 
 def get_all_pairs(user_id: int):
     """Витягує всі пари для конкретного користувача."""
-    sql = "SELECT * FROM schedule WHERE user_id=%s ORDER BY week_type, day, time ASC"
+
+    # === ИЗМЕНЕНО: Добавлена сортировка CASE для дней недели ===
+    # Это создает "виртуальный" столбец с номером дня недели и сортирует по нему
+    day_order_sql_case = " ".join([f"WHEN day = '{day}' THEN {i}" for i, day in enumerate(DAY_ORDER_LIST)])
+
+    sql = f"""
+    SELECT *,
+           CASE {day_order_sql_case} ELSE 99 END as day_order
+    FROM schedule 
+    WHERE user_id=%s 
+    ORDER BY week_type, day_order, time ASC
+    """
+
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
             cursor.execute(sql, (user_id,))
@@ -299,9 +323,9 @@ def format_pairs_message(pairs, title):
     message = f"{title}\n"
     current_week_type = ""
     current_day = ""
+    pair_counter = 0  # === ИЗМЕНЕНО: Добавлен счетчик для нумерации ===
 
     for pair in pairs:
-        # === ЗМІНЕНО: Виправлено граматику для /all ===
         if pair['week_type'] != current_week_type and 'весь' in title.lower():
             current_week_type = pair['week_type']
 
@@ -318,14 +342,19 @@ def format_pairs_message(pairs, title):
             message += f"\n--- **{display_week_type} ТИЖДЕНЬ** ---\n"
             current_day = ""
 
-        # === ЗМІНЕНО: Прибрано зайвий заголовок дня для /today ===
-        if 'сьогодні' not in title.lower():
-            if pair['day'] != current_day:
-                current_day = pair['day']
+        if pair['day'] != current_day:
+            current_day = pair['day']
+            pair_counter = 0  # === ИЗМЕНЕНО: Сброс счетчика на новый день ===
+
+            # === ИЗМЕНЕНО: Не показываем день для /today ===
+            if 'сьогодні' not in title.lower():
                 message += f"\n**{current_day.capitalize()}**\n"
 
+        pair_counter += 1  # === ИЗМЕНЕНО: Увеличение счетчика ===
         link = f" ([Link]({pair['link']}))" if pair['link'] and pair['link'] != 'None' else ""
-        message += f"  `{pair['time']}` - {pair['name']}{link}\n"
+
+        # === ИЗМЕНЕНО: Добавлена нумерация и `time` в `backticks` ===
+        message += f"  {pair_counter}) `{pair['time']}` - {pair['name']}{link}\n"
 
         if 'весь' in title.lower():
             message += f"     *(ID: `{pair['id']}`)*\n"
@@ -397,8 +426,7 @@ async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показує ВЕСЬ розклад, згрупований по тижнях та днях."""
     user_id = update.effective_chat.id
     try:
-        # === ЗМІНЕНО: Додано інформацію про поточний тиждень ===
-        current_week_female = get_current_week_type()  # "парна"
+        current_week_female = get_current_week_type()
         current_week_male = "парний" if current_week_female == "парна" else "непарний"
         message_header = f"(Зараз: **{current_week_male}** тиждень)\n\n"
 
@@ -423,7 +451,6 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         pairs_today = get_pairs_for_day(user_id, current_day_name, current_week_female)
 
-        # === ЗМІНЕНО: Виправлено граматику в заголовку ===
         current_week_male = ""
         if current_week_female == "парна":
             current_week_male = "парний"
