@@ -56,7 +56,6 @@ application = None
 
 # Connects to the PostgreSQL database.
 def get_db_conn():
-    # === ОСЬ ВИПРАВЛЕННЯ: psycogreen2 -> psycopg2 ===
     return psycopg2.connect(DATABASE_URL, sslmode='require', cursor_factory=psycopg2.extras.DictCursor)
 
 
@@ -604,7 +603,7 @@ async def check_and_send_reminders(bot: Bot):
             print(f"Не вдалося навіть надіслати повідомлення адміну: {e_admin}")
 
 
-# === НОВИЙ БЛОК: Функція "Життєвого циклу" (Lifespan) ===
+# === ЗМІНА ТУТ: Додано `await application.initialize()` ===
 @asynccontextmanager
 async def lifespan(app: Flask):
     """
@@ -630,6 +629,12 @@ async def lifespan(app: Flask):
         application.add_handler(CommandHandler("add", add_command))
         application.add_handler(CommandHandler("del", del_command))
         print("Lifespan: Обробники зареєстровані.")
+
+        # === ОСЬ ВИПРАВЛЕННЯ (ДВА РЯДКИ) ===
+        print("Lifespan: Ініціалізація Application (application.initialize)...")
+        await application.initialize()
+        print("Lifespan: Application ініціалізовано.")
+        # === КІНЕЦЬ ВИПРАВЛЕННЯ ===
 
         # 2. Встановлюємо вебхук
         try:
@@ -661,12 +666,10 @@ async def lifespan(app: Flask):
     print("Lifespan: Зупинка...")
 
 
-# === КІНЕЦЬ НОВОГО БЛОКУ ===
+# === КІНЕЦЬ БЛОКУ LIFESPAN ===
 
 
 # --- 7. Маршрути Flask (Вебхуки) ---
-# === ЗМІНЕНО: Створюємо Flask APP тут і передаємо в lifespan ===
-# Uvicorn буде шукати саме цю змінну 'app'
 app = Flask(__name__)
 
 
@@ -719,9 +722,6 @@ async def trigger_reminders():
 
 
 # --- 8. Реєстрація Обробників та Запуск ---
-
-# === ЗМІНЕНО: Ми перенесли всю логіку в 'lifespan' ===
-# === А 'app' перетворили на ASGI-обгортку з підтримкою lifespan ===
 
 # Створюємо ASGI-обгортку для Uvicorn
 wsgi_app = WsgiToAsgi(app)
