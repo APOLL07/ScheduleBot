@@ -276,16 +276,35 @@ def cleanup_old_notifications():
 
 # --- 4. Логіка Бота (Допоміжні функції) ---
 
+# НОВАЯ, ПРАВИЛЬНАЯ И ПОНЯТНАЯ ВЕРСИЯ
 def get_current_week_type():
-    """Calculates the current week type (e.g., 'odd'/'even') based on the reference date."""
+    """
+    Определяет тип текущей недели, возвращая "парна" или "непарна"
+    (в женском роде, чтобы соответствовать команде /add).
+    """
     today = datetime.now(TIMEZONE).date()
     days_diff = (today - REFERENCE_DATE).days
     weeks_diff = days_diff // 7
 
-    if weeks_diff % 2 == 0:
-        return REFERENCE_WEEK_TYPE
+    # Твоя REFERENCE_WEEK_TYPE = "непарний" (это базовая неделя)
+
+    is_reference_week = (weeks_diff % 2 == 0)
+
+    # 1. Определяем, какая сейчас неделя (м.р., как в константе)
+    current_week_type_male = ""
+    if is_reference_week:
+        # Сейчас референтная неделя
+        current_week_type_male = REFERENCE_WEEK_TYPE  # "непарний"
     else:
-        return "парний" if REFERENCE_WEEK_TYPE == "непарний" else "непарний"
+        # Сейчас альтернативная неделя
+        current_week_type_male = "парний"  # "парний" - это альтернатива "непарний"
+
+    # 2. Переводим мужской род (парний) в женский (парна)
+    if current_week_type_male == "парний":
+        return "парна"
+    else:
+        # "непарний" -> "непарна"
+        return "непарна"
 
 
 def format_pairs_message(pairs, title):
