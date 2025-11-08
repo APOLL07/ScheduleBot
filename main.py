@@ -195,14 +195,21 @@ def get_pairs_for_day(user_id: int, day: str, week_type: str):
     return rows
 
 
+# === ФУНКЦІЯ ПОВНІСТЮ ПЕРЕПИСАНА, ЩОБ УНИКНУТИ SYNTAXERROR ===
 def get_all_pairs(user_id: int):
-    """Витягує всі пари для конкретного користувача."""
+    """Витягує всі пари для конкретного користувача, сортуючи їх за днем тижня."""
 
-    # === ОСЬ ВИПРАВЛЕННЯ: Екранування апострофа в "п'ятниця" ===
-    # Додано .replace("'", "''") для коректного SQL-запиту
-    day_order_sql_case = " ".join(
-        [f"WHEN day = '{day.replace("'", "''")}' THEN {i}" for i, day in enumerate(DAY_ORDER_LIST)])
+    # 1. Створюємо список виразів CASE, екрануючи апострофи
+    sql_cases = []
+    for i, day in enumerate(DAY_ORDER_LIST):
+        # Замінюємо ' на '' для коректного SQL (напр., "п'ятниця" -> "п''ятниця")
+        sql_day = day.replace("'", "''")
+        sql_cases.append(f"WHEN day = '{sql_day}' THEN {i}")
 
+    # 2. Збираємо всі вирази в один рядок
+    day_order_sql_case = " ".join(sql_cases)
+
+    # 3. Формуємо повний SQL-запит
     sql = f"""
     SELECT *,
            CASE {day_order_sql_case} ELSE 99 END as day_order
@@ -216,6 +223,9 @@ def get_all_pairs(user_id: int):
             cursor.execute(sql, (user_id,))
             rows = cursor.fetchall()
     return rows
+
+
+# === КІНЕЦЬ ВИПРАВЛЕННЯ ===
 
 
 def delete_pair_from_db(pair_id: int, user_id: int):
