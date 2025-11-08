@@ -43,8 +43,6 @@ DAY_OF_WEEK_UKR = {
     6: "неділя"
 }
 
-# === ИЗМЕНЕНО: Добавлен список для правильной сортировки ===
-# Этот список определяет порядок сортировки дней
 DAY_ORDER_LIST = [
     "понеділок",
     "вівторок",
@@ -200,9 +198,10 @@ def get_pairs_for_day(user_id: int, day: str, week_type: str):
 def get_all_pairs(user_id: int):
     """Витягує всі пари для конкретного користувача."""
 
-    # === ИЗМЕНЕНО: Добавлена сортировка CASE для дней недели ===
-    # Это создает "виртуальный" столбец с номером дня недели и сортирует по нему
-    day_order_sql_case = " ".join([f"WHEN day = '{day}' THEN {i}" for i, day in enumerate(DAY_ORDER_LIST)])
+    # === ОСЬ ВИПРАВЛЕННЯ: Екранування апострофа в "п'ятниця" ===
+    # Додано .replace("'", "''") для коректного SQL-запиту
+    day_order_sql_case = " ".join(
+        [f"WHEN day = '{day.replace("'", "''")}' THEN {i}" for i, day in enumerate(DAY_ORDER_LIST)])
 
     sql = f"""
     SELECT *,
@@ -323,7 +322,7 @@ def format_pairs_message(pairs, title):
     message = f"{title}\n"
     current_week_type = ""
     current_day = ""
-    pair_counter = 0  # === ИЗМЕНЕНО: Добавлен счетчик для нумерации ===
+    pair_counter = 0
 
     for pair in pairs:
         if pair['week_type'] != current_week_type and 'весь' in title.lower():
@@ -344,16 +343,14 @@ def format_pairs_message(pairs, title):
 
         if pair['day'] != current_day:
             current_day = pair['day']
-            pair_counter = 0  # === ИЗМЕНЕНО: Сброс счетчика на новый день ===
+            pair_counter = 0
 
-            # === ИЗМЕНЕНО: Не показываем день для /today ===
             if 'сьогодні' not in title.lower():
                 message += f"\n**{current_day.capitalize()}**\n"
 
-        pair_counter += 1  # === ИЗМЕНЕНО: Увеличение счетчика ===
+        pair_counter += 1
         link = f" ([Link]({pair['link']}))" if pair['link'] and pair['link'] != 'None' else ""
 
-        # === ИЗМЕНЕНО: Добавлена нумерация и `time` в `backticks` ===
         message += f"  {pair_counter}) `{pair['time']}` - {pair['name']}{link}\n"
 
         if 'весь' in title.lower():
