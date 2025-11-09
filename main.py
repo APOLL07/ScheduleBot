@@ -30,7 +30,6 @@ ADMIN_ID = MY_ID
 REMIND_BEFORE_MINUTES = 10
 TIMEZONE = pytz.timezone('Europe/Kiev')
 
-# Ця логіка залишається для днів Пн-Пт та звичайних субот
 REFERENCE_DATE = datetime(2025, 9, 1).date()
 REFERENCE_WEEK_TYPE = "непарний"
 
@@ -54,24 +53,12 @@ DAY_ORDER_LIST = [
     "неділя"
 ]
 
-# ======================================================================
-# === КАРТА ЗАМІН ОНОВЛЕНА (ДОДАНО МИНУЛУ СУБОТУ) ===
-# ======================================================================
-#
-# Вказано точні дати і за розкладом якого дня вчитись.
-# Тип тижня ('week_type') для цих днів буде 'непарна'.
-#
 SATURDAY_MAPPING = {
-    # "дата_суботи_у_форматі_РРРР-ММ-ДД": "день_тижня_для_заміни"
-    "2025-11-08": "вівторок",  # Субота, що пройшла (08.11) -> непарний вівторок (для перевірки)
+    "2025-11-08": "вівторок",  # Субота, що пройшла (08.11) -> непарний вівторок
     "2025-11-15": "середа",  # Наступна субота (15.11) -> непарна середа
     "2025-11-22": "четвер",  # Субота через тиждень (22.11) -> непарний четвер
     "2025-11-29": "п'ятниця",  # Субота через 2 тижні (29.11) -> непарна п'ятниця
 }
-# ======================================================================
-# === КІНЕЦЬ ЗМІН ===
-# ======================================================================
-
 
 flask_app = None
 application = None
@@ -201,15 +188,24 @@ def add_pair_to_db(user_id: int, day: str, time_str: str, name: str, link: str, 
     sql = "INSERT INTO schedule (user_id, day, time, name, link, week_type) VALUES (%s, %s, %s, %s, %s, %s)"
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(sql, (user_id, day.lower(), time_str, name, link, week_type))
+            # === ВИПРАВЛЕННЯ СОРТУВАННЯ: Гарантуємо 0 попереду для HH:MM ===
+            try:
+                # Перетворюємо '9:50' в '09:50'
+                time_obj = datetime.strptime(time_str, '%H:%M').time()
+                formatted_time_str = time_obj.strftime('%H:%M')
+            except ValueError:
+                # Якщо формат вже дивний, просто записуємо як є
+                formatted_time_str = time_str
+                print(f"ПОПЕРЕДЖЕННЯ: Нестандартний формат часу '{time_str}', записуємо як є.")
+
+            cursor.execute(sql, (user_id, day.lower(), formatted_time_str, name, link, week_type))
         conn.commit()
 
 
+# === ФУНКЦІЯ ОНОВЛЕНА (СОРТУВАННЯ) ===
 def get_pairs_for_day(user_id: int, day_to_fetch: str, week_type: str, day_to_display: str = None):
     """
     Витягує всі пари для конкретного дня та типу тижня.
-    day_to_fetch: Який день шукати в БД (напр. "вівторок")
-    day_to_display: Яким днем його показати (напр. "субота")
     """
     if day_to_display is None:
         day_to_display = day_to_fetch
@@ -223,8 +219,9 @@ def get_pairs_for_day(user_id: int, day_to_fetch: str, week_type: str, day_to_di
             AND day =%s \
             AND (week_type='кожна' \
              OR week_type=%s)
-          ORDER BY time ASC \
+          ORDER BY time :: TIME ASC \
           """
+    # === ВИПРАВЛЕННЯ: Додано ::TIME (PostgreSQL) для коректного сортування часу ===
 
     override_note = f"(Як {day_to_fetch.capitalize()})" if day_to_fetch != day_to_display else None
 
@@ -235,6 +232,7 @@ def get_pairs_for_day(user_id: int, day_to_fetch: str, week_type: str, day_to_di
     return rows
 
 
+# === ФУНКЦІЯ ОНОВЛЕНА (СОРТУВАННЯ) ===
 def get_all_pairs(user_id: int):
     """Витягує ВЗАГАЛІ ВСІ пари (для /manage), сортуючи їх за типом, днем та часом."""
 
@@ -251,8 +249,9 @@ def get_all_pairs(user_id: int):
            NULL as override_note
     FROM schedule 
     WHERE user_id=%s 
-    ORDER BY week_type, day_order, time ASC
+    ORDER BY week_type, day_order, time::TIME ASC
     """
+    # === ВИПРАВЛЕННЯ: Додано ::TIME (PostgreSQL) для коректного сортування часу ===
 
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
@@ -400,12 +399,12 @@ def get_saturday_override(now_date: datetime.date):
     target_day = SATURDAY_MAPPING.get(date_str)
 
     if target_day:
-        # Всі суботи у мапі - непарні
         return target_day, "непарна"
     else:
         return None, None
 
 
+# === ФУНКЦІЯ ОНОВЛЕНА (ФОРМАТУВАННЯ) ===
 def format_pairs_message(pairs, title):
     """Допоміжна функція для гарного форматування списку пар."""
     if not pairs:
@@ -440,10 +439,8 @@ def format_pairs_message(pairs, title):
             current_day = pair['day']
             pair_counter = 0
 
-            if not (show_ids and current_week_type != ""):
-                message += "\n"
-
-            message += f"**{current_day.capitalize()}**\n"
+            # === ВИПРАВЛЕННЯ: 'show_ids' тепер не впливає на відступ ===
+            message += f"\n**{current_day.capitalize()}**\n"
 
         pair_counter += 1
         link = f" ([Link]({pair['link']}))" if pair['link'] and pair['link'] != 'None' else ""
@@ -625,9 +622,11 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         time_str = args[2]
         try:
+            # Перевірка формату, але ми все одно збережемо з 0 попереду у add_pair_to_db
             datetime.strptime(time_str, '%H:%M')
         except ValueError:
-            await update.message.reply_text("Помилка: невірний 'час'. Має бути у форматі `HH:MM` (напр. `08:30`).")
+            await update.message.reply_text(
+                "Помилка: невірний 'час'. Має бути у форматі `HH:MM` (напр. `08:30` або `9:50`).")
             return
 
         if len(args) >= 5:
