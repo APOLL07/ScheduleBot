@@ -931,5 +931,5 @@ class LifespanMiddleware:
 
 
 app = LifespanMiddleware(wsgi_app, lifespan_context=combined_lifespan)
-
+# c
 print("Додаток налаштовано з 'lifespan' та готовий до запуску.")
