@@ -4,7 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="9d681e7c-c584-4ec8-9849-219575587890" name="Changes" comment="-latest version" />
+    <list default="true" id="9d681e7c-c584-4ec8-9849-219575587890" name="Changes" comment="-latest version">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -86,7 +90,8 @@
       <workItem from="1762505677750" duration="11055000" />
       <workItem from="1762532927404" duration="6032000" />
       <workItem from="1762608689219" duration="4513000" />
-      <workItem from="1762626428835" duration="432000" />
+      <workItem from="1762626428835" duration="1503000" />
+      <workItem from="1763121153038" duration="488000" />
     </task>
     <task id="LOCAL-00001" summary="-latest version">
       <option name="closed" value="true" />
@@ -328,7 +333,15 @@
       <option name="project" value="LOCAL" />
       <updated>1762626862766</updated>
     </task>
-    <option name="localTasksCounter" value="31" />
+    <task id="LOCAL-00031" summary="-latest version">
+      <option name="closed" value="true" />
+      <created>1762627339198</created>
+      <option name="number" value="00031" />
+      <option name="presentableId" value="LOCAL-00031" />
+      <option name="project" value="LOCAL" />
+      <updated>1762627339198</updated>
+    </task>
+    <option name="localTasksCounter" value="32" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">

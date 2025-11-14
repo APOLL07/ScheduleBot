@@ -11,17 +11,20 @@ from datetime import datetime, time, timedelta
 from asgiref.wsgi import WsgiToAsgi
 from contextlib import asynccontextmanager
 
+# ====> 1. Додаємо APScheduler
+from flask_apscheduler import APScheduler
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
-TRIGGER_SECRET = os.environ.get("TRIGGER_SECRET")
+
+# ====> 2. 'TRIGGER_SECRET' нам більше НЕ ПОТРІБЕН, я його видалив.
 
 if not BOT_TOKEN:
     print("ПОМИЛКА: BOT_TOKEN не знайдено! Перевірте змінні на Render.")
 if not DATABASE_URL:
     print("ПОМИЛКА: DATABASE_URL не знайдено! Перевірте змінні на Render.")
-if not TRIGGER_SECRET:
-    print("ПОМИЛКА: TRIGGER_SECRET не знайдено! Перевірте змінні на Render.")
+# ====> 3. Видалено перевірку для TRIGGER_SECRET
 if not WEBHOOK_URL:
     print("ПОМИЛКА: WEBHOOK_URL не знайдено! Він потрібен для set_webhook.")
 
@@ -53,8 +56,17 @@ DAY_ORDER_LIST = [
     "неділя"
 ]
 
+SATURDAY_MAPPING = {
+    "2025-11-08": "вівторок",  # Субота, що пройшла (08.11) -> непарний вівторок
+    "2025-11-15": "середа",  # Наступна субота (15.11) -> непарна середа
+    "2025-11-22": "четвер",  # Субота через тиждень (22.11) -> непарний четвер
+    "2025-11-29": "п'ятниця",  # Субота через 2 тижні (29.11) -> непарна п'ятниця
+}
+
 flask_app = None
 application = None
+# ====> 4. Ініціалізуємо планувальник (глобально)
+scheduler = APScheduler()
 
 
 def get_db_conn():
@@ -181,42 +193,70 @@ def add_pair_to_db(user_id: int, day: str, time_str: str, name: str, link: str, 
     sql = "INSERT INTO schedule (user_id, day, time, name, link, week_type) VALUES (%s, %s, %s, %s, %s, %s)"
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(sql, (user_id, day.lower(), time_str, name, link, week_type))
+            # === ВИПРАВЛЕННЯ СОРТУВАННЯ: Гарантуємо 0 попереду для HH:MM ===
+            try:
+                # Перетворюємо '9:50' в '09:50'
+                time_obj = datetime.strptime(time_str, '%H:%M').time()
+                formatted_time_str = time_obj.strftime('%H:%M')
+            except ValueError:
+                # Якщо формат вже дивний, просто записуємо як є
+                formatted_time_str = time_str
+                print(f"ПОПЕРЕДЖЕННЯ: Нестандартний формат часу '{time_str}', записуємо як є.")
+
+            cursor.execute(sql, (user_id, day.lower(), formatted_time_str, name, link, week_type))
         conn.commit()
 
 
-def get_pairs_for_day(user_id: int, day: str, week_type: str):
-    """Витягує всі пари для конкретного користувача, дня та типу тижня."""
-    sql = "SELECT * FROM schedule WHERE user_id=%s AND day=%s AND (week_type='кожна' OR week_type=%s) ORDER BY time ASC"
+# === ФУНКЦІЯ ОНОВЛЕНА (СОРТУВАННЯ) ===
+def get_pairs_for_day(user_id: int, day_to_fetch: str, week_type: str, day_to_display: str = None):
+    """
+    Витягує всі пари для конкретного дня та типу тижня.
+    """
+    if day_to_display is None:
+        day_to_display = day_to_fetch
+
+    sql = """
+          SELECT id, \
+                 user_id, \
+                 %s AS day, time, name, link, week_type, %s AS override_note
+          FROM schedule
+          WHERE user_id=%s \
+            AND day =%s \
+            AND (week_type='кожна' \
+             OR week_type=%s)
+          ORDER BY time :: TIME ASC \
+          """
+    # === ВИПРАВЛЕННЯ: Додано ::TIME (PostgreSQL) для коректного сортування часу ===
+
+    override_note = f"(Як {day_to_fetch.capitalize()})" if day_to_fetch != day_to_display else None
+
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(sql, (user_id, day.lower(), week_type))
+            cursor.execute(sql, (day_to_display, override_note, user_id, day_to_fetch.lower(), week_type))
             rows = cursor.fetchall()
     return rows
 
 
-# === ФУНКЦІЯ ПОВНІСТЮ ПЕРЕПИСАНА, ЩОБ УНИКНУТИ SYNTAXERROR ===
+# === ФУНКЦІЯ ОНОВЛЕНА (СОРТУВАННЯ) ===
 def get_all_pairs(user_id: int):
-    """Витягує всі пари для конкретного користувача, сортуючи їх за днем тижня."""
+    """Витягує ВЗАГАЛІ ВСІ пари (для /manage), сортуючи їх за типом, днем та часом."""
 
-    # 1. Створюємо список виразів CASE, екрануючи апострофи
     sql_cases = []
     for i, day in enumerate(DAY_ORDER_LIST):
-        # Замінюємо ' на '' для коректного SQL (напр., "п'ятниця" -> "п''ятниця")
         sql_day = day.replace("'", "''")
         sql_cases.append(f"WHEN day = '{sql_day}' THEN {i}")
 
-    # 2. Збираємо всі вирази в один рядок
     day_order_sql_case = " ".join(sql_cases)
 
-    # 3. Формуємо повний SQL-запит
     sql = f"""
     SELECT *,
-           CASE {day_order_sql_case} ELSE 99 END as day_order
+           CASE {day_order_sql_case} ELSE 99 END as day_order,
+           NULL as override_note
     FROM schedule 
     WHERE user_id=%s 
-    ORDER BY week_type, day_order, time ASC
+    ORDER BY week_type, day_order, time::TIME ASC
     """
+    # === ВИПРАВЛЕННЯ: Додано ::TIME (PostgreSQL) для коректного сортування часу ===
 
     with get_db_conn() as conn:
         with conn.cursor() as cursor:
@@ -225,7 +265,30 @@ def get_all_pairs(user_id: int):
     return rows
 
 
-# === КІНЕЦЬ ВИПРАВЛЕННЯ ===
+def get_schedule_for_current_week(user_id: int, start_of_week_date: datetime.date):
+    """
+    Збирає повний розклад на тиждень (для /all),
+    враховуючи ротацію субот.
+    """
+    all_week_pairs = []
+
+    for i in range(7):  # 0 (Пн) ... 6 (Нд)
+        current_day_date = start_of_week_date + timedelta(days=i)
+        current_day_name = DAY_OF_WEEK_UKR[i]
+
+        day_pairs = []
+
+        target_day, override_week_type = get_saturday_override(current_day_date)
+
+        if target_day:
+            day_pairs = get_pairs_for_day(user_id, target_day, override_week_type, day_to_display=current_day_name)
+        else:
+            current_week_type = get_week_type_for_date(current_day_date)
+            day_pairs = get_pairs_for_day(user_id, current_day_name, current_week_type)
+
+        all_week_pairs.extend(day_pairs)
+
+    return all_week_pairs
 
 
 def delete_pair_from_db(pair_id: int, user_id: int):
@@ -301,29 +364,52 @@ def cleanup_old_notifications():
         print(f"ПОМИЛКА cleanup_old_notifications: {e}")
 
 
+def get_week_type_for_date(date_obj):
+    """Визначає тип тижня ('парна'/'непарна') для БУДЬ-ЯКОЇ дати."""
+    days_diff = (date_obj - REFERENCE_DATE).days
+    if days_diff < 0:
+        days_diff = (REFERENCE_DATE - date_obj).days
+        weeks_diff = (days_diff + 6) // 7
+
+        if weeks_diff % 2 == 0:
+            current_week_type_male = REFERENCE_WEEK_TYPE
+        else:
+            current_week_type_male = "парний" if REFERENCE_WEEK_TYPE == "непарний" else "непарний"
+    else:
+        weeks_diff = days_diff // 7
+        is_reference_week = (weeks_diff % 2 == 0)
+
+        if is_reference_week:
+            current_week_type_male = REFERENCE_WEEK_TYPE
+        else:
+            current_week_type_male = "парний" if REFERENCE_WEEK_TYPE == "непарний" else "непарний"
+
+    return "парна" if current_week_type_male == "парний" else "непарна"
+
+
 def get_current_week_type():
+    """Визначає тип поточного тижня ('парна'/'непарна')."""
+    return get_week_type_for_date(datetime.now(TIMEZONE).date())
+
+
+def get_saturday_override(now_date: datetime.date):
     """
-    Визначає тип поточного тижня, повертаючи "парна" або "непарна"
-    (у жіночому роді, щоб відповідати команді /add).
+    Перевіряє, чи є ця дата суботою з особливим розкладом.
+    Повертає (target_day, week_type) або (None, None).
     """
-    today = datetime.now(TIMEZONE).date()
-    days_diff = (today - REFERENCE_DATE).days
-    weeks_diff = days_diff // 7
+    if now_date.weekday() != 5:
+        return None, None
 
-    is_reference_week = (weeks_diff % 2 == 0)
+    date_str = now_date.strftime('%Y-%m-%d')
+    target_day = SATURDAY_MAPPING.get(date_str)
 
-    current_week_type_male = ""
-    if is_reference_week:
-        current_week_type_male = REFERENCE_WEEK_TYPE
+    if target_day:
+        return target_day, "непарна"
     else:
-        current_week_type_male = "парний"
-
-    if current_week_type_male == "парний":
-        return "парна"
-    else:
-        return "непарна"
+        return None, None
 
 
+# === ФУНКЦІЯ ОНОВЛЕНА (ФОРМАТУВАННЯ) ===
 def format_pairs_message(pairs, title):
     """Допоміжна функція для гарного форматування списку пар."""
     if not pairs:
@@ -334,8 +420,11 @@ def format_pairs_message(pairs, title):
     current_day = ""
     pair_counter = 0
 
+    show_ids = 'id' in title.lower() or 'управління' in title.lower()
+
     for pair in pairs:
-        if pair['week_type'] != current_week_type and 'весь' in title.lower():
+
+        if show_ids and pair['week_type'] != current_week_type:
             current_week_type = pair['week_type']
 
             display_week_type = ""
@@ -355,15 +444,17 @@ def format_pairs_message(pairs, title):
             current_day = pair['day']
             pair_counter = 0
 
-            if 'сьогодні' not in title.lower():
-                message += f"\n**{current_day.capitalize()}**\n"
+            # === ВИПРАВЛЕННЯ: 'show_ids' тепер не впливає на відступ ===
+            message += f"\n**{current_day.capitalize()}**\n"
 
         pair_counter += 1
         link = f" ([Link]({pair['link']}))" if pair['link'] and pair['link'] != 'None' else ""
 
-        message += f"  {pair_counter}) `{pair['time']}` - {pair['name']}{link}\n"
+        note = f" *{pair['override_note']}*" if pair['override_note'] else ""
 
-        if 'весь' in title.lower():
+        message += f"  {pair_counter}) `{pair['time']}` - {pair['name']}{link}{note}\n"
+
+        if show_ids:
             message += f"     *(ID: `{pair['id']}`)*\n"
 
     return message
@@ -377,7 +468,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Привіт {user.first_name}!\n\n"
         "Я бот з розкладом. Я надсилатиму повідомлення про пари за декілька хвилин.\n\n"
         "**Команди:**\n"
-        "/all - Показати весь розклад\n"
+        "/all - Показати розклад на поточний тиждень\n"
         "/today - Показати розклад на сьогодні\n"
         "/subscribe - Увімкнути сповіщення\n"
         "/unsubscribe - Вимкнути сповіщення\n"
@@ -385,6 +476,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     if user.id == ADMIN_ID:
         text += ("\n**Панель адміну:**\n"
+                 "/manage - Управління розкладом (з ID)\n"
                  "/add `[тип] [день] [час] [назва] [посилання]`\n"
                  "/del `[номер]`")
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -396,8 +488,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "**Довідка по командам бота:**\n\n"
         "**/start** - Початок роботи та вітання.\n"
-        "**/all** - Показати *весь* розклад на тиждень (з ID для видалення).\n"
-        "**/today** - Показати розклад на *сьогодні* (з урахуванням парного/непарного тижня).\n"
+        "**/all** - Показати розклад на *весь поточний* тиждень (з урахуванням парності та ротації субот).\n"
+        "**/today** - Показати розклад на *сьогодні*.\n"
         "**/subscribe** - Увімкнути сповіщення про пари (за замовчуванням).\n"
         "**/unsubscribe** - Вимкнути сповіщення.\n"
         "**/help** - Показати це повідомлення.\n"
@@ -405,14 +497,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id == ADMIN_ID:
         text += (
             "\n**Панель адміну:**\n"
+            "**/manage** - Показати *ВЕСЬ* розклад (і парний, і непарний) з ID для видалення.\n"
             "**/add** `[тип] [день] [час] [назва] [посилання]`\n"
             "*Типи: `парна`, `непарна`, `кожна`*\n"
             "*День: `понеділок`, `вівторок` і т.д.*\n"
             "*Час: `08:30`, `10:00`*\n"
-            "*Посилання: `https://...` або `None`*\n"
-            "*(Приклад: /add парна понеділок 10:00 Математика https://...)*\n\n"
+            "*Посилання: `https://...` або `None`*\n\n"
             "**/del** `[ID]`\n"
-            "*(ID можна побачити у команді /all)*"
+            "*(ID можна побачити у команді /manage)*"
         )
     await update.message.reply_text(text, parse_mode="Markdown", disable_web_page_preview=True)
 
@@ -429,42 +521,73 @@ async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("❌ Сповіщення вимкнено.")
 
 
-async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показує ВЕСЬ розклад, згрупований по тижнях та днях."""
-    user_id = update.effective_chat.id
+async def manage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Тільки для адміна) Показує ВЕСЬ розклад (Парний, Непарний, Кожен) з ID."""
+
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Ця команда доступна лише адміну.")
+        return
+
     try:
         current_week_female = get_current_week_type()
         current_week_male = "парний" if current_week_female == "парна" else "непарний"
-        message_header = f"(Зараз: **{current_week_male}** тиждень)\n\n"
+        message_header = f"⚙️ Управління розкладом\n(Зараз: **{current_week_male}** тиждень)\n\n"
 
-        all_pairs = get_all_pairs(user_id)
-        title = "🗓️ Весь розклад"
+        all_pairs = get_all_pairs(ADMIN_ID)
+        title = "🗓️ Весь розклад (з ID)"
 
         message_body = format_pairs_message(all_pairs, title)
         await update.message.reply_text(message_header + message_body, parse_mode="Markdown",
                                         disable_web_page_preview=True)
+    except Exception as e:
+        print(f"ПОМИЛКА в /manage: {e}")
+        await update.message.reply_text(f"Сталася помилка при отриманні розкладу: {e}")
+
+
+async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показує АКТУАЛЬНИЙ розклад на тиждень (з ротацією субот)."""
+    try:
+        now = datetime.now(TIMEZONE)
+
+        current_week_female = get_current_week_type()
+        current_week_male = "парний" if current_week_female == "парна" else "непарний"
+        title = f"🗓️ Розклад на **{current_week_male.upper()}** тиждень"
+
+        start_of_week = now.date() - timedelta(days=now.weekday())
+
+        relevant_pairs = get_schedule_for_current_week(ADMIN_ID, start_of_week)
+
+        message = format_pairs_message(relevant_pairs, title)
+
+        await update.message.reply_text(message, parse_mode="Markdown", disable_web_page_preview=True)
+
     except Exception as e:
         print(f"ПОМИЛКА в /all: {e}")
         await update.message.reply_text(f"Сталася помилка при отриманні розкладу: {e}")
 
 
 async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показує розклад на СЬОГОДНІ, враховуючи тип тижня."""
-    user_id = update.effective_chat.id
+    """Показує розклад на СЬОГОДНІ, враховуючи тип тижня та ротацію субот."""
     try:
         now = datetime.now(TIMEZONE)
         current_day_name = DAY_OF_WEEK_UKR[now.weekday()]
-        current_week_female = get_current_week_type()
 
-        pairs_today = get_pairs_for_day(user_id, current_day_name, current_week_female)
+        title = ""
+        pairs_today = []
 
-        current_week_male = ""
-        if current_week_female == "парна":
-            current_week_male = "парний"
-        elif current_week_female == "непарна":
-            current_week_male = "непарний"
+        target_day, override_week_type = get_saturday_override(now.date())
 
-        title = f"🔵 Розклад на сьогодні ({current_day_name.capitalize()}, {current_week_male} тиждень)"
+        if target_day:
+            print(f"[Today] ПЕРЕВИЗНАЧЕННЯ СУБОТИ: {now.date()} -> {target_day} ({override_week_type})")
+            pairs_today = get_pairs_for_day(ADMIN_ID, target_day, override_week_type, day_to_display=current_day_name)
+            title = f"🔵 Розклад на сьогодні ({current_day_name.capitalize()}, непарний тиждень)\n**Увага: За розкладом {target_day.capitalize()}!**"
+        else:
+            current_week_female = get_current_week_type()
+            current_week_male = "парний" if current_week_female == "парна" else "непарний"
+            pairs_today = get_pairs_for_day(ADMIN_ID, current_day_name, current_week_female)
+            title = f"🔵 Розклад на сьогодні ({current_day_name.capitalize()}, {current_week_male} тиждень)"
+
         message = format_pairs_message(pairs_today, title)
 
         await update.message.reply_text(message, parse_mode="Markdown", disable_web_page_preview=True)
@@ -504,9 +627,11 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         time_str = args[2]
         try:
+            # Перевірка формату, але ми все одно збережемо з 0 попереду у add_pair_to_db
             datetime.strptime(time_str, '%H:%M')
         except ValueError:
-            await update.message.reply_text("Помилка: невірний 'час'. Має бути у форматі `HH:MM` (напр. `08:30`).")
+            await update.message.reply_text(
+                "Помилка: невірний 'час'. Має бути у форматі `HH:MM` (напр. `08:30` або `9:50`).")
             return
 
         if len(args) >= 5:
@@ -519,7 +644,7 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name = " ".join(args[3:])
             link = "None"
 
-        add_pair_to_db(user_id, day, time_str, name, link, week_type)
+        add_pair_to_db(ADMIN_ID, day, time_str, name, link, week_type)
 
         await update.message.reply_text(
             f"✅ *Пару додано:*\n"
@@ -547,13 +672,13 @@ async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args or len(context.args) != 1:
         await update.message.reply_text("Помилка: Вкажіть ID пари для видалення.\n"
                                         "Приклад: /del `12`\n"
-                                        "(ID можна побачити у команді /all)")
+                                        "(ID можна побачити у команді /manage)")
         return
 
     try:
         pair_id = int(context.args[0])
 
-        if delete_pair_from_db(pair_id, user_id):
+        if delete_pair_from_db(pair_id, ADMIN_ID):
             await update.message.reply_text(f"✅ Пару з ID `{pair_id}` видалено.")
         else:
             await update.message.reply_text(f"❌ Не вдалося знайти пару з ID `{pair_id}`, що належить вам.")
@@ -568,32 +693,49 @@ async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def check_and_send_reminders(bot: Bot):
     """
     Головна функція для Cron-завдання.
-    Перевіряє розклад та надсилає нагадування.
+    Перевіряє розклад та надсилає нагадування (з ротацією субот).
     """
+    # ====> 5. ЦЯ ФУНКЦІЯ ЗАЛИШАЄТЬСЯ БЕЗ ЗМІН.
+    # Її тепер буде викликати наш внутрішній планувальник.
+
     print(f"[check_and_send_reminders] Запуск перевірки нагадувань... Час: {datetime.now(TIMEZONE)}")
 
     try:
         now = datetime.now(TIMEZONE)
         notification_time_dt = now + timedelta(minutes=REMIND_BEFORE_MINUTES)
-
         target_time_obj = notification_time_dt.time().replace(second=0, microsecond=0)
 
         current_day_name = DAY_OF_WEEK_UKR[now.weekday()]
-        current_week_type = get_current_week_type()
 
-        print(f"[Check] Шукаємо пари на {current_day_name}, {current_week_type} о {target_time_obj.strftime('%H:%M')}")
+        target_day, override_week_type = get_saturday_override(now.date())
+
+        day_to_check = current_day_name
+        week_type_to_check = ""
+        saturday_note = ""
+
+        if target_day:
+            print(f"[Reminders] ПЕРЕВИЗНАЧЕННЯ СУБОТИ: {now.date()} -> {target_day} ({override_week_type})")
+            day_to_check = target_day
+            week_type_to_check = override_week_type
+            saturday_note = f"\n(За розкладом {target_day.capitalize()})"
+        else:
+            week_type_to_check = get_current_week_type()
+
+        print(
+            f"[Check] Шукаємо пари на {day_to_check} (реальний день: {current_day_name}), {week_type_to_check} о {target_time_obj.strftime('%H:%M')}")
 
         subscribed_users = get_all_subscribed_users()
         if not subscribed_users:
             print("[Check] Немає підписаних користувачів.")
             return
 
+        pairs_today = get_pairs_for_day(ADMIN_ID, day_to_check, week_type_to_check)
+
+        if not pairs_today:
+            print(f"[Check] На {day_to_check} ({week_type_to_check}) пар немає.")
+            return
+
         for user_id in subscribed_users:
-            pairs_today = get_pairs_for_day(user_id, current_day_name, current_week_type)
-
-            if not pairs_today:
-                continue
-
             for pair in pairs_today:
                 try:
                     try:
@@ -611,10 +753,12 @@ async def check_and_send_reminders(bot: Bot):
                             print(f"[Check] Надсилаємо сповіщення {notification_key}...")
 
                             link = f"\n\nПосилання: {pair['link']}" if pair['link'] and pair['link'] != 'None' else ""
+
                             message = (
                                 f"🔔 **Нагадування!**\n\n"
                                 f"Через {REMIND_BEFORE_MINUTES} хвилин ({pair['time']}) почнеться пара:\n"
                                 f"**{pair['name']}**"
+                                f"{saturday_note}"
                                 f"{link}"
                             )
 
@@ -626,7 +770,7 @@ async def check_and_send_reminders(bot: Bot):
                             print(f"[Check] Сповіщення {notification_key} вже було надіслано.")
 
                 except Exception as e_pair:
-                    print(f"ПОМИЛКА обробки пари {pair['id']} для user {user_id}: {e_pair}")
+                    print(f"ПОМИЛKA обробки пари {pair['id']} для user {user_id}: {e_pair}")
 
         cleanup_old_notifications()
 
@@ -636,6 +780,25 @@ async def check_and_send_reminders(bot: Bot):
             await bot.send_message(ADMIN_ID, f"ПОМИЛКА в check_and_send_reminders:\n{e}")
         except Exception as e_admin:
             print(f"Не вдалося навіть надіслати повідомлення адміну: {e_admin}")
+
+
+# ====> 6. Створюємо "обгортку", яку буде викликати APScheduler
+def scheduled_job_wrapper():
+    """
+    Синхронна "обгортка" для APScheduler.
+    Вона створює asyncio-завдання (task), щоб запустити нашу
+    асинхронну функцію check_and_send_reminders.
+    """
+    print("[APScheduler] Тригер! Запускаємо check_and_send_reminders в asyncio...")
+    if application and application.bot:
+        try:
+            # Важливо: ми не 'await' тут, ми "вогнем-і-забули" (fire-and-forget),
+            # бо ми у синхронній функції, яку викликав APScheduler.
+            asyncio.create_task(check_and_send_reminders(application.bot))
+        except Exception as e:
+            print(f"[APScheduler] ПОМИЛКА під час запуску create_task: {e}")
+    else:
+        print("[APScheduler] ПОМИЛКА: 'application' або 'application.bot' ще не ініціалізовано.")
 
 
 @asynccontextmanager
@@ -657,6 +820,7 @@ async def lifespan(app: Flask):
         application.add_handler(CommandHandler("subscribe", subscribe_command))
         application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
         application.add_handler(CommandHandler("all", all_command))
+        application.add_handler(CommandHandler("manage", manage_command))
         application.add_handler(CommandHandler("today", today_command))
         application.add_handler(CommandHandler("add", add_command))
         application.add_handler(CommandHandler("del", del_command))
@@ -687,6 +851,17 @@ async def lifespan(app: Flask):
 
     init_db()
 
+    # ====> 7. ЗАПУСКАЄМО ПЛАНУВАЛЬНИК ПРЯМО ТУТ
+    print("Lifespan: Ініціалізація APScheduler...")
+    scheduler.init_app(flask_app)
+    scheduler.add_job(id='My Scheduled Job',
+                      func=scheduled_job_wrapper,  # Наша нова синхронна "обгортка"
+                      trigger='interval',
+                      minutes=1)
+    scheduler.start()
+    print("Lifespan: APScheduler запущено.")
+    # ====> КІНЕЦЬ НОВОЇ ЛОГІКИ <====
+
     print("Lifespan: Запуск завершено, передаємо керування Uvicorn.")
     yield
     print("Lifespan: Зупинка...")
@@ -697,8 +872,11 @@ app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    """Маршрут для перевірок Render (прибирає 404)."""
-    print("Перевірка працездатності / OK")
+    """
+    Маршрут для UptimeRobot.
+    Він має "пінгувати" цей маршрут кожні 10-14 хвилин.
+    """
+    print("Перевірка працездатності / (UptimeRobot) OK")
     return "OK, Сервіс працює!", 200
 
 
@@ -718,28 +896,13 @@ async def webhook():
         return "Помилка", 500
 
 
-@app.route(f'/trigger/{TRIGGER_SECRET}', methods=['POST'])
-async def trigger_reminders():
-    """
-    Маршрут для Cron-завдання (Render Cron Job).
-    Запускає перевірку та надсилання нагадувань.
-    """
-    if not application:
-        print("ПОМИЛКА: 'application' не ініціалізовано у /trigger.")
-        return "Бот не ініціалізовано", 500
-
-    auth_header = flask_request.headers.get('Authorization')
-    if auth_header != f"Bearer {TRIGGER_SECRET}":
-        print(f"ПОМИЛКА: Невірний секрет у /trigger. Отримано: {auth_header}")
-        return "Заборонено", 403
-
-    print("[Trigger] Отримано запит на перевірку нагадувань...")
-    try:
-        asyncio.create_task(check_and_send_reminders(application.bot))
-        return "Тригер оброблено", 200
-    except Exception as e:
-        print(f"ПОМИЛКА тригера: {e}")
-        return "Помилка тригера", 500
+# ====> 8. ВИДАЛЕНО СТАРИЙ МАРШРУТ /trigger/
+#
+# (Тут був @app.route(f'/trigger/{TRIGGER_SECRET}', ...))
+#
+# Він більше не потрібен, оскільки APScheduler тепер
+# виконує цю роботу зсередини.
+#
 
 
 wsgi_app = WsgiToAsgi(app)

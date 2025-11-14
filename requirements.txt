@@ -5,3 +5,4 @@ gunicorn
 uvicorn
 asgiref
 pytz
+Flask-APScheduler
