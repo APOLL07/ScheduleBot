@@ -65,7 +65,7 @@ SATURDAY_MAPPING = {
 
 flask_app = None
 application = None
-main_loop = None # <--- ЗМІНА 1: ДОДАНО ЦЕЙ РЯДОК
+main_loop = None # <--- ДОДАНО
 # ====> 4. Ініціалізуємо планувальник (глобально)
 scheduler = APScheduler()
 
@@ -784,7 +784,7 @@ async def check_and_send_reminders(bot: Bot):
 
 
 # ====> 6. Створюємо "обгортку", яку буде викликати APScheduler
-# ====> ЗМІНА 3: ОНОВЛЕНО ФУНКЦІЮ <====
+# ====> ЗМІНА: ОНОВЛЕНО ФУНКЦІЮ <====
 def scheduled_job_wrapper():
     """
     Синхронна "обгортка" для APScheduler.
@@ -816,17 +816,18 @@ def scheduled_job_wrapper():
             print("[APScheduler] ПОМИЛКА: 'application' або 'application.bot' ще не ініціалізовано.")
 
 
-# ====> ЗМІНА 2: ОНОВЛЕНО ФУНКЦІЮ <====
+# ====> ЗМІНА: ОНОВЛЕНО ФУНКЦІЮ <====
 @asynccontextmanager
 async def lifespan(app: Flask):
     """
     Ця функція запускається Uvicorn ОДИН РАЗ під час старту.
-    Це правильне місце для ініціалізації та налаштування вебхука.
+    'app' тут - це *оригінальний* Flask app, завдяки нашій новій
+    LifespanMiddleware.
     """
     global application, flask_app, main_loop # <--- 1. ДОДАНО 'main_loop'
     print("Lifespan: Запуск...")
 
-    flask_app = app
+    flask_app = app # 'app' - це 'original_flask_app'
     application = Application.builder().token(BOT_TOKEN).build() if BOT_TOKEN else None
 
     if application:
@@ -870,6 +871,7 @@ async def lifespan(app: Flask):
 
     # ====> 7. ЗАПУСКАЄМО ПЛАНУВАЛЬНИК ПРЯМО ТУТ
     print("Lifespan: Ініціалізація APScheduler...")
+    # 'flask_app' тут - це 'original_flask_app', що є правильним
     scheduler.init_app(flask_app)
     scheduler.add_job(id='My Scheduled Job',
                         func=scheduled_job_wrapper,  # Наша нова синхронна "обгортка"
@@ -921,32 +923,47 @@ async def webhook():
 # виконує цю роботу зсередини.
 #
 
+# ===> ОНОВЛЕНИЙ БЛОК ДЛЯ КОРЕКТНОГО ЗАПУСКУ <===
 
-wsgi_app = WsgiToAsgi(app)
+# 1. Зберігаємо оригінальний Flask 'app' у новій змінній
+original_flask_app = app
+
+# 2. Створюємо обгортку для Uvicorn
+wsgi_app = WsgiToAsgi(original_flask_app)
 
 
 @asynccontextmanager
 async def combined_lifespan(app_instance):
     """
     Комбінує наш 'lifespan' з 'lifespan' Flask-додатку.
+    'app_instance' тут буде 'original_flask_app'
     """
+    # 'lifespan' - це наша async-функція, визначена вище
     async with lifespan(app_instance):
         yield
 
 
 class LifespanMiddleware:
-    def __init__(self, app, lifespan_context):
-        self.app = app
+    def __init__(self, app_to_run, lifespan_context, flask_app_instance):
+        self.app_to_run = app_to_run             # Це буде wsgi_app
         self.lifespan_context = lifespan_context
+        self.flask_app_instance = flask_app_instance # Це буде original_flask_app
 
     async def __call__(self, scope, receive, send):
         if scope['type'] == 'lifespan':
-            async with self.lifespan_context(self.app):
-                await self.app(scope, receive, send)
+            # Ми передаємо *оригінальний* app у lifespan,
+            # але запускаємо 'app_to_run' (wsgi_app)
+            async with self.lifespan_context(self.flask_app_instance):
+                await self.app_to_run(scope, receive, send)
         else:
-            await self.app(scope, receive, send)
+            await self.app_to_run(scope, receive, send)
 
 
-app = LifespanMiddleware(wsgi_app, lifespan_context=combined_lifespan)
+# 3. Переписуємо 'app' для Uvicorn, АЛЕ ПЕРЕДАЄМО ОБИДВІ ВЕРСІЇ
+app = LifespanMiddleware(
+    app_to_run=wsgi_app,
+    lifespan_context=combined_lifespan,
+    flask_app_instance=original_flask_app # Передаємо оригінал сюди
+)
 # c
 print("Додаток налаштовано з 'lifespan' та готовий до запуску.")
