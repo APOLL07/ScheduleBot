@@ -11,17 +11,20 @@ from datetime import datetime, time, timedelta
 from asgiref.wsgi import WsgiToAsgi
 from contextlib import asynccontextmanager
 
+# ====> 1. Додаємо APScheduler
+from flask_apscheduler import APScheduler
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
-TRIGGER_SECRET = os.environ.get("TRIGGER_SECRET")
+
+# ====> 2. 'TRIGGER_SECRET' нам більше НЕ ПОТРІБЕН, я його видалив.
 
 if not BOT_TOKEN:
     print("ПОМИЛКА: BOT_TOKEN не знайдено! Перевірте змінні на Render.")
 if not DATABASE_URL:
     print("ПОМИЛКА: DATABASE_URL не знайдено! Перевірте змінні на Render.")
-if not TRIGGER_SECRET:
-    print("ПОМИЛКА: TRIGGER_SECRET не знайдено! Перевірте змінні на Render.")
+# ====> 3. Видалено перевірку для TRIGGER_SECRET
 if not WEBHOOK_URL:
     print("ПОМИЛКА: WEBHOOK_URL не знайдено! Він потрібен для set_webhook.")
 
@@ -62,6 +65,9 @@ SATURDAY_MAPPING = {
 
 flask_app = None
 application = None
+main_loop = None # <--- ЗМІНА 1: ДОДАНО ЦЕЙ РЯДОК
+# ====> 4. Ініціалізуємо планувальник (глобально)
+scheduler = APScheduler()
 
 
 def get_db_conn():
@@ -100,19 +106,19 @@ def create_sent_notifications_table():
     try:
         with conn.cursor() as cursor:
             cursor.execute('''CREATE TABLE IF NOT EXISTS sent_notifications
-                              (
-                                  notification_key
-                                  TEXT
-                                  PRIMARY
-                                  KEY,
-                                  sent_at
-                                  TIMESTAMP
-                                  WITH
-                                  TIME
-                                  ZONE
-                                  NOT
-                                  NULL
-                              )''')
+                             (
+                                 notification_key
+                                 TEXT
+                                 PRIMARY
+                                 KEY,
+                                 sent_at
+                                 TIMESTAMP
+                                 WITH
+                                 TIME
+                                 ZONE
+                                 NOT
+                                 NULL
+                             )''')
             print("Оновлено схему: Таблиця 'sent_notifications' готова.")
         conn.commit()
     except Exception as e:
@@ -131,49 +137,49 @@ def init_db():
         with get_db_conn() as conn:
             with conn.cursor() as cursor:
                 cursor.execute('''CREATE TABLE IF NOT EXISTS schedule
-                                  (
-                                      id
-                                      SERIAL
-                                      PRIMARY
-                                      KEY,
-                                      user_id
-                                      BIGINT
-                                      NOT
-                                      NULL,
-                                      day
-                                      TEXT
-                                      NOT
-                                      NULL,
-                                      time
-                                      TEXT
-                                      NOT
-                                      NULL,
-                                      name
-                                      TEXT
-                                      NOT
-                                      NULL,
-                                      link
-                                      TEXT,
-                                      week_type
-                                      TEXT
-                                      NOT
-                                      NULL
-                                      DEFAULT
-                                      'кожна'
-                                  )''')
+                                 (
+                                     id
+                                     SERIAL
+                                     PRIMARY
+                                     KEY,
+                                     user_id
+                                     BIGINT
+                                     NOT
+                                     NULL,
+                                     day
+                                     TEXT
+                                     NOT
+                                     NULL,
+                                     time
+                                     TEXT
+                                     NOT
+                                     NULL,
+                                     name
+                                     TEXT
+                                     NOT
+                                     NULL,
+                                     link
+                                     TEXT,
+                                     week_type
+                                     TEXT
+                                     NOT
+                                     NULL
+                                     DEFAULT
+                                     'кожна'
+                                 )''')
                 cursor.execute('''CREATE TABLE IF NOT EXISTS users
-                                  (
-                                      user_id
-                                      BIGINT
-                                      PRIMARY
-                                      KEY,
-                                      username
-                                      TEXT,
-                                      subscribed
-                                      INTEGER
-                                      DEFAULT
-                                      1
-                                  )''')
+                                 (
+                                     user_id
+                                     BIGINT
+                                     PRIMARY
+                                     KEY,
+                                     username
+                                     TEXT,
+                                     subscribed
+                                     INTEGER
+                                     DEFAULT
+                                     1
+                                 )''')
             conn.commit()
         print("Базу даних ініціалізовано (PostgreSQL)")
 
@@ -211,16 +217,16 @@ def get_pairs_for_day(user_id: int, day_to_fetch: str, week_type: str, day_to_di
         day_to_display = day_to_fetch
 
     sql = """
-          SELECT id, \
-                 user_id, \
-                 %s AS day, time, name, link, week_type, %s AS override_note
-          FROM schedule
-          WHERE user_id=%s \
-            AND day =%s \
-            AND (week_type='кожна' \
+         SELECT id, \
+                user_id, \
+                %s AS day, time, name, link, week_type, %s AS override_note
+         FROM schedule
+         WHERE user_id=%s \
+           AND day =%s \
+           AND (week_type='кожна' \
              OR week_type=%s)
-          ORDER BY time :: TIME ASC \
-          """
+         ORDER BY time :: TIME ASC \
+         """
     # === ВИПРАВЛЕННЯ: Додано ::TIME (PostgreSQL) для коректного сортування часу ===
 
     override_note = f"(Як {day_to_fetch.capitalize()})" if day_to_fetch != day_to_display else None
@@ -690,6 +696,9 @@ async def check_and_send_reminders(bot: Bot):
     Головна функція для Cron-завдання.
     Перевіряє розклад та надсилає нагадування (з ротацією субот).
     """
+    # ====> 5. ЦЯ ФУНКЦІЯ ЗАЛИШАЄТЬСЯ БЕЗ ЗМІН.
+    # Її тепер буде викликати наш внутрішній планувальник.
+
     print(f"[check_and_send_reminders] Запуск перевірки нагадувань... Час: {datetime.now(TIMEZONE)}")
 
     try:
@@ -774,13 +783,47 @@ async def check_and_send_reminders(bot: Bot):
             print(f"Не вдалося навіть надіслати повідомлення адміну: {e_admin}")
 
 
+# ====> 6. Створюємо "обгортку", яку буде викликати APScheduler
+# ====> ЗМІНА 3: ОНОВЛЕНО ФУНКЦІЮ <====
+def scheduled_job_wrapper():
+    """
+    Синхронна "обгортка" для APScheduler.
+    Вона створює asyncio-завдання (task), щоб запустити нашу
+    асинхронну функцію check_and_send_reminders.
+    """
+    print("[APScheduler] Тригер! Запускаємо check_and_send_reminders в asyncio...")
+
+    # Перевіряємо, що все готово (включно з main_loop)
+    if application and application.bot and main_loop:
+        try:
+            # ===> ЦЕ КЛЮЧОВА ЗМІНА <===
+            # Використовуємо run_coroutine_threadsafe для безпечного запуску
+            # async-завдання з поточного (синхронного) потоку APScheduler
+            # у головному (asyncio) потоці Uvicorn.
+            asyncio.run_coroutine_threadsafe(
+                check_and_send_reminders(application.bot),
+                main_loop
+            )
+
+        except Exception as e:
+            # Помилка саме при спробі "закинути" завдання у цикл
+            print(f"[APScheduler] ПОМИЛКА під час запуску run_coroutine_threadsafe: {e}")
+    else:
+        # Пояснюємо, чого саме не вистачило
+        if not main_loop:
+            print("[APScheduler] ПОМИЛКА: 'main_loop' ще не ініціалізовано.")
+        elif not application or not application.bot:
+            print("[APScheduler] ПОМИЛКА: 'application' або 'application.bot' ще не ініціалізовано.")
+
+
+# ====> ЗМІНА 2: ОНОВЛЕНО ФУНКЦІЮ <====
 @asynccontextmanager
 async def lifespan(app: Flask):
     """
     Ця функція запускається Uvicorn ОДИН РАЗ під час старту.
     Це правильне місце для ініціалізації та налаштування вебхука.
     """
-    global application, flask_app
+    global application, flask_app, main_loop # <--- 1. ДОДАНО 'main_loop'
     print("Lifespan: Запуск...")
 
     flask_app = app
@@ -801,6 +844,7 @@ async def lifespan(app: Flask):
 
         print("Lifespan: Ініціалізація Application (application.initialize)...")
         await application.initialize()
+        main_loop = asyncio.get_running_loop() # <--- 2. ДОДАНО ЦЕЙ РЯДОК
         print("Lifespan: Application ініціалізовано.")
 
         try:
@@ -824,6 +868,17 @@ async def lifespan(app: Flask):
 
     init_db()
 
+    # ====> 7. ЗАПУСКАЄМО ПЛАНУВАЛЬНИК ПРЯМО ТУТ
+    print("Lifespan: Ініціалізація APScheduler...")
+    scheduler.init_app(flask_app)
+    scheduler.add_job(id='My Scheduled Job',
+                        func=scheduled_job_wrapper,  # Наша нова синхронна "обгортка"
+                        trigger='interval',
+                        minutes=1)
+    scheduler.start()
+    print("Lifespan: APScheduler запущено.")
+    # ====> КІНЕЦЬ НОВОЇ ЛОГІКИ <====
+
     print("Lifespan: Запуск завершено, передаємо керування Uvicorn.")
     yield
     print("Lifespan: Зупинка...")
@@ -834,8 +889,11 @@ app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    """Маршрут для перевірок Render (прибирає 404)."""
-    print("Перевірка працездатності / OK")
+    """
+    Маршрут для UptimeRobot.
+    Він має "пінгувати" цей маршрут кожні 10-14 хвилин.
+    """
+    print("Перевірка працездатності / (UptimeRobot) OK")
     return "OK, Сервіс працює!", 200
 
 
@@ -855,28 +913,13 @@ async def webhook():
         return "Помилка", 500
 
 
-@app.route(f'/trigger/{TRIGGER_SECRET}', methods=['POST'])
-async def trigger_reminders():
-    """
-    Маршрут для Cron-завдання (Render Cron Job).
-    Запускає перевірку та надсилання нагадувань.
-    """
-    if not application:
-        print("ПОМИЛКА: 'application' не ініціалізовано у /trigger.")
-        return "Бот не ініціалізовано", 500
-
-    auth_header = flask_request.headers.get('Authorization')
-    if auth_header != f"Bearer {TRIGGER_SECRET}":
-        print(f"ПОМИЛКА: Невірний секрет у /trigger. Отримано: {auth_header}")
-        return "Заборонено", 403
-
-    print("[Trigger] Отримано запит на перевірку нагадувань...")
-    try:
-        asyncio.create_task(check_and_send_reminders(application.bot))
-        return "Тригер оброблено", 200
-    except Exception as e:
-        print(f"ПОМИЛКА тригера: {e}")
-        return "Помилка тригера", 500
+# ====> 8. ВИДАЛЕНО СТАРИЙ МАРШРУТ /trigger/
+#
+# (Тут був @app.route(f'/trigger/{TRIGGER_SECRET}', ...))
+#
+# Він більше не потрібен, оскільки APScheduler тепер
+# виконує цю роботу зсередини.
+#
 
 
 wsgi_app = WsgiToAsgi(app)
@@ -905,5 +948,5 @@ class LifespanMiddleware:
 
 
 app = LifespanMiddleware(wsgi_app, lifespan_context=combined_lifespan)
-
+# c
 print("Додаток налаштовано з 'lifespan' та готовий до запуску.")
