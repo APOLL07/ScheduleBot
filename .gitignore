@@ -1,4 +1,4 @@
-.ngrok.exe
 .env
-.__pycache__
-.idea
+ngrok.exe
+__pycache__/
+.idea/
