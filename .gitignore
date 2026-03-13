@@ -1,0 +1,4 @@
+.ngrok.exe
+.env
+.__pycache__
+.idea

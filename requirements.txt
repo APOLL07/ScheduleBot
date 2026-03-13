@@ -1,0 +1,10 @@
+python-telegram-bot
+psycopg2-binary
+flask[async]
+gunicorn
+uvicorn
+asgiref
+pytz
+Flask-APScheduler
+cohere
+python-dotenv
