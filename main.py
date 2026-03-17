@@ -36,6 +36,11 @@ ADMIN_ID_2 = int(admin_id_2_raw) if admin_id_2_raw else None
 
 ADMIN_IDS = {ADMIN_ID} | ({ADMIN_ID_2} if ADMIN_ID_2 else set())
 
+# ID владельца расписания — данные в БД привязаны к этому user_id.
+# Если не задан отдельно, используется ADMIN_ID.
+schedule_owner_raw = os.environ.get("SCHEDULE_OWNER_ID")
+SCHEDULE_OWNER_ID = int(schedule_owner_raw) if schedule_owner_raw else ADMIN_ID
+
 REMIND_BEFORE_MINUTES = 10
 TIMEZONE = pytz.timezone('Europe/Kiev')
 
@@ -791,7 +796,7 @@ async def check_and_send_reminders(bot: Bot):
         subscribed_users = get_all_subscribed_users()
         if not subscribed_users: return
 
-        pairs_today = get_pairs_for_day(ADMIN_ID, current_day_name, week_type_to_check)
+        pairs_today = get_pairs_for_day(SCHEDULE_OWNER_ID, current_day_name, week_type_to_check)
 
         for user_id in subscribed_users:
             for pair in pairs_today:
@@ -845,7 +850,7 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         day_name = DAY_OF_WEEK_UKR[weekday]
         week = get_week_type_for_date(target_date)
         week_label = "парний" if week == "парна" else "непарний"
-        pairs = get_pairs_for_day(ADMIN_ID, day_name, week)
+        pairs = get_pairs_for_day(SCHEDULE_OWNER_ID, day_name, week)
         title = f"🔵 {label_prefix} ({day_name.capitalize()}, {week_label} тиждень)"
         return format_pairs_message(pairs, title)
 
@@ -879,11 +884,11 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         processing_msg = await update.message.reply_text("⏳ Оброблюю розклад...")
         try:
             db_actions = parse_full_schedule_locally(text)
-            changes_count = execute_db_actions(ADMIN_ID, db_actions)
+            changes_count = execute_db_actions(SCHEDULE_OWNER_ID, db_actions)
 
             now_dt = datetime.now(TIMEZONE)
             cw = "парний" if get_current_week_type() == "парна" else "непарний"
-            pairs = get_schedule_for_current_week(ADMIN_ID, now_dt.date() - timedelta(days=now_dt.weekday()))
+            pairs = get_schedule_for_current_week(SCHEDULE_OWNER_ID, now_dt.date() - timedelta(days=now_dt.weekday()))
 
             reply = f"✅ Розклад успішно оновлено.\n\n⚙️ _Виконано дій з базою: {changes_count}_"
             await processing_msg.edit_text(reply, parse_mode="Markdown")
@@ -1010,7 +1015,7 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_monday = now_dt.date() - timedelta(days=now_dt.weekday())
         target_date = current_monday + timedelta(days=offset)
         if wtype:
-            pairs = get_pairs_for_day(ADMIN_ID, day_name, wtype)
+            pairs = get_pairs_for_day(SCHEDULE_OWNER_ID, day_name, wtype)
             wlabel = "парний" if wtype == "парна" else "непарний"
             title = f"🗓️ {day_name.capitalize()} ({wlabel} тиждень)"
             return format_pairs_message(pairs, title)
@@ -1037,7 +1042,7 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     tomorrow_dt = (now_dt + timedelta(days=1)).date()
                     if wt:
                         dn = DAY_OF_WEEK_UKR.get(tomorrow_dt.weekday(), "п'ятниця")
-                        pairs = get_pairs_for_day(ADMIN_ID, dn, wt)
+                        pairs = get_pairs_for_day(SCHEDULE_OWNER_ID, dn, wt)
                         wlabel = "парний" if wt == "парна" else "непарний"
                         msg = format_pairs_message(pairs, f"🔵 Завтра ({dn.capitalize()}, {wlabel} тиждень)")
                     else:
@@ -1052,7 +1057,7 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     today_dt = now_dt.date()
                     if wt:
                         dn = DAY_OF_WEEK_UKR.get(today_dt.weekday(), "понеділок")
-                        pairs = get_pairs_for_day(ADMIN_ID, dn, wt)
+                        pairs = get_pairs_for_day(SCHEDULE_OWNER_ID, dn, wt)
                         wlabel = "парний" if wt == "парна" else "непарний"
                         msg = format_pairs_message(pairs, f"🔵 Сьогодні ({dn.capitalize()}, {wlabel} тиждень)")
                     else:
@@ -1065,12 +1070,12 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 async def _send_week(wt=wtype):
                     now_dt = datetime.now(TIMEZONE)
                     if wt:
-                        pairs = get_schedule_for_specific_week(ADMIN_ID, wt)
+                        pairs = get_schedule_for_specific_week(SCHEDULE_OWNER_ID, wt)
                         wlabel = "ПАРНИЙ" if wt == "парна" else "НЕПАРНИЙ"
                         msg = format_pairs_message(pairs, f"🗓️ Розклад на **{wlabel}** тиждень")
                     else:
                         cw = "парний" if get_current_week_type() == "парна" else "непарний"
-                        pairs = get_schedule_for_current_week(ADMIN_ID, now_dt.date() - timedelta(days=now_dt.weekday()))
+                        pairs = get_schedule_for_current_week(SCHEDULE_OWNER_ID, now_dt.date() - timedelta(days=now_dt.weekday()))
                         msg = format_pairs_message(pairs, f"🗓️ Розклад на **{cw.upper()}** тиждень")
                     await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
                 schedule_tasks.append(_send_week)
@@ -1126,7 +1131,7 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if any(kw in text_lower for kw in bare_show_kw):
             now_dt = datetime.now(TIMEZONE)
             cw = "парний" if get_current_week_type() == "парна" else "непарний"
-            pairs = get_schedule_for_current_week(ADMIN_ID, now_dt.date() - timedelta(days=now_dt.weekday()))
+            pairs = get_schedule_for_current_week(SCHEDULE_OWNER_ID, now_dt.date() - timedelta(days=now_dt.weekday()))
             msg = format_pairs_message(pairs, f"🗓️ Розклад на **{cw.upper()}** тиждень")
             return await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
 
@@ -1136,7 +1141,7 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_day_name = DAY_OF_WEEK_UKR.get(now.weekday(), "невідомо")
     current_week_str = get_current_week_type()
     if now.weekday() < 5:
-        pairs_today = get_pairs_for_day(ADMIN_ID, current_day_name, current_week_str)
+        pairs_today = get_pairs_for_day(SCHEDULE_OWNER_ID, current_day_name, current_week_str)
         text_today = format_pairs_message(pairs_today, f"Сьогодні ({current_day_name}, {current_week_str} тиждень):")
     else:
         text_today = "Сьогодні вихідний, пар немає!"
@@ -1145,16 +1150,16 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tomorrow_day_name = DAY_OF_WEEK_UKR.get(tomorrow.weekday(), "невідомо")
     tomorrow_week_str = get_week_type_for_date(tomorrow.date())
     if tomorrow.weekday() < 5:
-        pairs_tomorrow = get_pairs_for_day(ADMIN_ID, tomorrow_day_name, tomorrow_week_str)
+        pairs_tomorrow = get_pairs_for_day(SCHEDULE_OWNER_ID, tomorrow_day_name, tomorrow_week_str)
         text_tomorrow = format_pairs_message(pairs_tomorrow, f"Завтра ({tomorrow_day_name}, {tomorrow_week_str} тиждень):")
     else:
         text_tomorrow = "Завтра вихідний, пар немає!"
 
-    all_pairs = get_all_pairs(ADMIN_ID)
+    all_pairs = get_all_pairs(SCHEDULE_OWNER_ID)
     text_all = format_pairs_message(all_pairs, "Повний розклад (всі записи):")
 
     # Останні видалені пари (для контексту відновлення)
-    last_deleted = get_last_deleted_pairs(ADMIN_ID)
+    last_deleted = get_last_deleted_pairs(SCHEDULE_OWNER_ID)
     text_deleted = format_deleted_pairs_for_prompt(last_deleted)
 
     system_prompt = f"""
@@ -1356,7 +1361,7 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         show_schedule = ai_json.get("show_schedule", None)  # "today" | "tomorrow" | "week" | "day:назва_дня"
 
         # Виконуємо всі дії з БД ПЕРШИМИ
-        changes_count = execute_db_actions(ADMIN_ID, db_actions)
+        changes_count = execute_db_actions(SCHEDULE_OWNER_ID, db_actions)
 
         final_message = reply_text
         if changes_count > 0:
@@ -1383,17 +1388,17 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif show_schedule == "week":
                 current_week = "парний" if get_current_week_type() == "парна" else "непарний"
                 sched_msg = format_pairs_message(
-                    get_schedule_for_current_week(ADMIN_ID, now_dt.date() - timedelta(days=now_dt.weekday())),
+                    get_schedule_for_current_week(SCHEDULE_OWNER_ID, now_dt.date() - timedelta(days=now_dt.weekday())),
                     f"🗓️ Розклад на **{current_week.upper()}** тиждень"
                 )
             elif show_schedule == "week_even":
                 sched_msg = format_pairs_message(
-                    get_schedule_for_specific_week(ADMIN_ID, "парна"),
+                    get_schedule_for_specific_week(SCHEDULE_OWNER_ID, "парна"),
                     "🗓️ Розклад на **ПАРНИЙ** тиждень"
                 )
             elif show_schedule == "week_odd":
                 sched_msg = format_pairs_message(
-                    get_schedule_for_specific_week(ADMIN_ID, "непарна"),
+                    get_schedule_for_specific_week(SCHEDULE_OWNER_ID, "непарна"),
                     "🗓️ Розклад на **НЕПАРНИЙ** тиждень"
                 )
             elif isinstance(show_schedule, str) and show_schedule.startswith("day:"):
@@ -1421,19 +1426,21 @@ def add_user_if_not_exists(user_id: int, username: str):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     add_user_if_not_exists(user.id, user.username)
-    text = "Привіт!\nЯ твій розумний AI-асистент з розкладу.\n\n/all - Розклад на тиждень\n/today - На сьогодні\n/randomfact - Отримати ІТ-факт\n/help - Повна довідка з управління"
+    text = "Привіт!\nЯ твій розумний AI-асистент з розкладу.\n\n/all - Розклад на тиждень\n/today - На сьогодні\n/randomfact - Отримати ІТ-факт"
+    if user.id in ADMIN_IDS:
+        text += "\n/help - Повна довідка з управління"
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def manage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS: return
     current_week = "парний" if get_current_week_type() == "парна" else "непарний"
-    msg = format_pairs_message(get_all_pairs(ADMIN_ID), f"⚙️ Управління розкладом\n(Зараз: **{current_week}** тиждень)\n\n🗓️ Весь розклад (з ID)")
+    msg = format_pairs_message(get_all_pairs(SCHEDULE_OWNER_ID), f"⚙️ Управління розкладом\n(Зараз: **{current_week}** тиждень)\n\n🗓️ Весь розклад (з ID)")
     await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
 
 async def all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(TIMEZONE)
     current_week = "парний" if get_current_week_type() == "парна" else "непарний"
-    msg = format_pairs_message(get_schedule_for_current_week(ADMIN_ID, now.date() - timedelta(days=now.weekday())), f"🗓️ Розклад на **{current_week.upper()}** тиждень")
+    msg = format_pairs_message(get_schedule_for_current_week(SCHEDULE_OWNER_ID, now.date() - timedelta(days=now.weekday())), f"🗓️ Розклад на **{current_week.upper()}** тиждень")
     await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
 
 async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1443,7 +1450,7 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     current_day_name = DAY_OF_WEEK_UKR[weekday]
     current_week = get_current_week_type()
-    pairs = get_pairs_for_day(ADMIN_ID, current_day_name, current_week)
+    pairs = get_pairs_for_day(SCHEDULE_OWNER_ID, current_day_name, current_week)
     title = f"🔵 На сьогодні ({current_day_name.capitalize()}, {'парний' if current_week == 'парна' else 'непарний'} тиждень)"
     await update.message.reply_text(format_pairs_message(pairs, title), parse_mode="Markdown", disable_web_page_preview=True)
 
