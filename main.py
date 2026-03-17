@@ -1086,7 +1086,7 @@ def add_user_if_not_exists(user_id: int, username: str):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     add_user_if_not_exists(user.id, user.username)
-    text = "Привіт!\nЯ твій розумний AI-асистент з розкладу.\n\n/all - Розклад на тиждень\n/today - На сьогодні\n/manage - Управління\n/randomfact - Отримати ІТ-факт\n\nАбо просто запитай мене: 'Яка в мене завтра перша пара?'"
+    text = "Привіт!\nЯ твій розумний AI-асистент з розкладу.\n\n/all - Розклад на тиждень\n/today - На сьогодні\n/randomfact - Отримати ІТ-факт"
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def manage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
