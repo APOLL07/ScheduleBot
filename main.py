@@ -372,6 +372,24 @@ def execute_db_actions(user_id: int, actions_list):
             add_pair_to_db(user_id, day_ukr, pair_time, subject, link, week_ukr, order)
             processed_count += 1
 
+        elif action == "UPDATE_LINK":
+            name_keywords = data.get("name_keywords", [])
+            if isinstance(name_keywords, str):
+                name_keywords = [name_keywords]
+            if not name_keywords and subject and subject != "Без назви":
+                name_keywords = [subject]
+            if name_keywords and day_ukr:
+                conditions = " OR ".join(["LOWER(name) LIKE %s" for _ in name_keywords])
+                params = [link, user_id, day_ukr] + [f"%{kw.lower()}%" for kw in name_keywords]
+                with get_db_conn() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            f"UPDATE schedule SET link=%s WHERE user_id=%s AND day=%s AND ({conditions})",
+                            params
+                        )
+                        processed_count += cursor.rowcount
+                    conn.commit()
+
         elif action == "DELETE":
             delete_specific_pair(user_id, day_ukr, order, week_ukr)
             processed_count += 1
@@ -947,6 +965,7 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     КРОК 4 — "subject": бери назву ТОЧНО як написано. Якщо назва є в словнику нижче — використовуй повну офіційну.
     КРОК 5 — "link": якщо після пари є URL або "№:..., Код доступу:..." — записуй ВСЕ в одному рядку.
+    КРОК 6 — КРИТИЧНО: кожна дія ADD ПОВИННА мати правильне "day". Перед генерацією дій перевір до якого дня тижня належить блок (ПОНЕДІЛОК=Monday, ВІВТОРОК=Tuesday, СЕРЕДА=Wednesday, ЧЕТВЕР=Thursday, П'ЯТНИЦЯ=Friday). Не змішуй дні між собою!
 
     [СЛОВНИК ПРЕДМЕТІВ]:
     - "матан", "математика" → "Математичні основи захисту інформації - доц. Морозов Юрій Олександрович"
@@ -962,7 +981,10 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ============================================================
     ПРАВИЛА ТОЧКОВИХ ЗМІН:
     ============================================================
-    - "зміни", "виправ", "додай" → дія "UPDATE"
+    - Якщо користувач хоче ТІЛЬКИ ОНОВИТИ ПОСИЛАННЯ до існуючої пари (каже "добав ссылку", "додай посилання", "встав лінк") —
+      використовуй ВИКЛЮЧНО дію "UPDATE_LINK". НЕ видаляй пару, НЕ перезаписуй!
+      {{"action":"UPDATE_LINK","data":{{"day":"Wednesday","name_keywords":["Іноземна мова","англійська","Воробйова","Єршова"],"link":"https://"}}}}
+    - "зміни", "виправ", "додай пару" → дія "UPDATE" (повна заміна пари)
     - Нестандартний час: "order": 99, "custom_time": "ЧЧ:ММ"
     - Дні: "Monday"–"Friday". Тижні: "odd"=непарна, "even"=парна, "both"=кожна
 
