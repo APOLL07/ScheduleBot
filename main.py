@@ -1453,6 +1453,7 @@ async def randomfact_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(f"🎲 **Цікавий ІТ-факт:**\n\n{fact}", parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS: return
     help_text = """📖 **Як користуватися ботом**
 
 **Команди:**
