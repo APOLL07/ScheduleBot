@@ -2,3 +2,5 @@
 ngrok.exe
 __pycache__/
 .idea/
+.pytest_cache/
+*.pyc
