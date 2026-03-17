@@ -593,7 +593,28 @@ def execute_db_actions(user_id: int, actions_list):
                 name_keywords = [name_keywords]
             if not name_keywords and subject and subject != "Без назви":
                 name_keywords = [subject]
-            if name_keywords and day_ukr:
+
+            # Precise matching by order (pair number) — preferred
+            link_order = data.get("order")
+            link_week = data.get("week", "both")
+            link_week_ukr = AI_TO_DB_WEEKS.get(link_week, "кожна")
+
+            if link_order and day_ukr:
+                with get_db_conn() as conn:
+                    with conn.cursor() as cursor:
+                        if link_week_ukr == "кожна":
+                            cursor.execute(
+                                "UPDATE schedule SET link=%s WHERE user_id=%s AND day=%s AND pair_order=%s",
+                                (link, user_id, day_ukr, link_order)
+                            )
+                        else:
+                            cursor.execute(
+                                "UPDATE schedule SET link=%s WHERE user_id=%s AND day=%s AND pair_order=%s AND (week_type=%s OR week_type='кожна')",
+                                (link, user_id, day_ukr, link_order, link_week_ukr)
+                            )
+                        processed_count += cursor.rowcount
+                    conn.commit()
+            elif name_keywords and day_ukr:
                 conditions = " OR ".join(["LOWER(name) LIKE %s" for _ in name_keywords])
                 params = [link, user_id, day_ukr] + [f"%{kw.lower()}%" for kw in name_keywords]
                 with get_db_conn() as conn:
@@ -602,6 +623,30 @@ def execute_db_actions(user_id: int, actions_list):
                             f"UPDATE schedule SET link=%s WHERE user_id=%s AND day=%s AND ({conditions})",
                             params
                         )
+                        processed_count += cursor.rowcount
+                    conn.commit()
+
+        elif action == "UPDATE_FIELD":
+            field_name = data.get("field")  # "link" or "name"
+            field_value = data.get("value", "")
+            field_order = data.get("order")
+            field_week = data.get("week", "both")
+            field_week_ukr = AI_TO_DB_WEEKS.get(field_week, "кожна")
+
+            allowed_fields = {"link", "name"}
+            if field_name in allowed_fields and field_order and day_ukr:
+                with get_db_conn() as conn:
+                    with conn.cursor() as cursor:
+                        if field_week_ukr == "кожна":
+                            cursor.execute(
+                                f"UPDATE schedule SET {field_name}=%s WHERE user_id=%s AND day=%s AND pair_order=%s",
+                                (field_value, user_id, day_ukr, field_order)
+                            )
+                        else:
+                            cursor.execute(
+                                f"UPDATE schedule SET {field_name}=%s WHERE user_id=%s AND day=%s AND pair_order=%s AND (week_type=%s OR week_type='кожна')",
+                                (field_value, user_id, day_ukr, field_order, field_week_ukr)
+                            )
                         processed_count += cursor.rowcount
                     conn.commit()
 
@@ -821,6 +866,9 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "постав", "поміняй", "поменяй", "переставь", "перестав",
         "перепиши", "перезапиши", "запиши", "переписати", "перезаписати", "записати",
         "swap", "move",
+        "вставь", "вставити", "вставляй", "встав",
+        "обнови", "оновити", "оновлюй", "обновить",
+        "ссылк", "ссилк", "посилання", "лінк", "линк", "link",
     ]
     has_action = any(kw in text_lower for kw in ACTION_KEYWORDS)
 
@@ -1218,14 +1266,40 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     - "філософія", "Афанасьєв" → "Філософія - Афанасьєв О.І."
 
     ============================================================
-    ПРАВИЛА ТОЧКОВИХ ЗМІН:
+    ПРАВИЛА ТОЧКОВИХ ЗМІН (РЕДАГУВАННЯ КОМПОНЕНТІВ ПАРИ):
     ============================================================
-    - Якщо користувач хоче ТІЛЬКИ ОНОВИТИ ПОСИЛАННЯ до існуючої пари (каже "добав ссылку", "додай посилання", "встав лінк") —
-      використовуй ВИКЛЮЧНО дію "UPDATE_LINK". НЕ видаляй пару, НЕ перезаписуй!
-      {{"action":"UPDATE_LINK","data":{{"day":"Wednesday","name_keywords":["Іноземна мова","англійська","Воробйова","Єршова"],"link":"https://"}}}}
-    - "зміни", "виправ", "додай пару" → дія "UPDATE" (повна заміна пари)
+
+    **ГОЛОВНЕ ПРАВИЛО**: для зміни ОДНОГО компонента існуючої пари (посилання, назва, дані підключення)
+    ЗАВЖДИ ідентифікуй пару за day + order + week. НЕ використовуй DELETE+ADD для зміни одного поля!
+
+    --- ОНОВИТИ ПОСИЛАННЯ (UPDATE_LINK) ---
+    Використовуй коли: "додай ссылку", "встав посилання", "вставь ссылку", "змін посилання",
+    "додай лінк", "обнови лінк", "поміняй ссылку", "замінити ссылку"
+    ЗАВЖДИ вказуй "order" (номер пари) для точного пошуку:
+      {{"action":"UPDATE_LINK","data":{{"day":"Tuesday","order":1,"week":"both","link":"https://zoom.us/..."}}}}
+    Якщо номер пари невідомий — шукай за назвою (fallback):
+      {{"action":"UPDATE_LINK","data":{{"day":"Wednesday","name_keywords":["Іноземна мова"],"link":"https://..."}}}}
+
+    --- ВИДАЛИТИ ПОСИЛАННЯ (UPDATE_FIELD з link=None) ---
+    Використовуй коли: "видали посилання", "удали ссылку", "прибери лінк", "удали данные подключения"
+      {{"action":"UPDATE_FIELD","data":{{"day":"Tuesday","order":1,"week":"both","field":"link","value":"None"}}}}
+
+    --- ЗМІНИТИ НАЗВУ ПАРИ (UPDATE_FIELD з field=name) ---
+    Використовуй коли: "перейменуй пару", "зміни назву"
+      {{"action":"UPDATE_FIELD","data":{{"day":"Monday","order":2,"week":"odd","field":"name","value":"Нова назва предмету"}}}}
+
+    --- ПОВНА ЗАМІНА ПАРИ (UPDATE) ---
+    Використовуй ТІЛЬКИ коли потрібно замінити ВСЮ пару цілком (інший предмет, інший час):
+      {{"action":"UPDATE","data":{{"day":"Monday","order":1,"week":"both","subject":"Назва","link":"https://..."}}}}
+
     - Нестандартний час: "order": 99, "custom_time": "ЧЧ:ММ"
     - Дні: "Monday"–"Friday". Тижні: "odd"=непарна, "even"=парна, "both"=кожна
+
+    КРИТИЧНО ВАЖЛИВО:
+    - Якщо користувач вказує НОМЕР пари ("перша пара", "2 пара", "пара 1") — ЗАВЖДИ використовуй order
+    - Якщо є URL у повідомленні і мова про "вставити/додати" — це UPDATE_LINK з order
+    - Якщо мова про "видалити/прибрати дані підключення/ссылку" — це UPDATE_FIELD field=link value=None
+    - НІКОЛИ не видаляй і не перестворюй пару тільки для зміни посилання!
 
     ============================================================
     ПРАВИЛА ВИДАЛЕННЯ:
@@ -1347,7 +1421,7 @@ def add_user_if_not_exists(user_id: int, username: str):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     add_user_if_not_exists(user.id, user.username)
-    text = "Привіт!\nЯ твій розумний AI-асистент з розкладу.\n\n/all - Розклад на тиждень\n/today - На сьогодні\n/randomfact - Отримати ІТ-факт"
+    text = "Привіт!\nЯ твій розумний AI-асистент з розкладу.\n\n/all - Розклад на тиждень\n/today - На сьогодні\n/randomfact - Отримати ІТ-факт\n/help - Повна довідка з управління"
     await update.message.reply_text(text, parse_mode="Markdown")
 
 async def manage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1378,6 +1452,83 @@ async def randomfact_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     fact = await generate_unique_fact(update.effective_user.id)
     await update.message.reply_text(f"🎲 **Цікавий ІТ-факт:**\n\n{fact}", parse_mode="Markdown")
 
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = """📖 **Як користуватися ботом**
+
+**Команди:**
+/today — розклад на сьогодні
+/all — розклад на тиждень
+/manage — всі пари з ID
+/randomfact — ІТ-факт
+/help — ця довідка
+
+━━━━━━━━━━━━━━━━━━━━
+**Переглянути розклад (текстом):**
+━━━━━━━━━━━━━━━━━━━━
+• `розклад на сьогодні`
+• `розклад на завтра`
+• `покажи вівторок` / `пари в середу`
+• `розклад на тиждень`
+• `розклад на непарний тиждень`
+• `покажи понеділок парного тижня`
+
+━━━━━━━━━━━━━━━━━━━━
+**Додати / замінити пару цілком:**
+━━━━━━━━━━━━━━━━━━━━
+• `додай у понеділок 3 пару — Фізика`
+• `зміни 2 пару у вівторок на Математику`
+
+━━━━━━━━━━━━━━━━━━━━
+**Вставити / змінити посилання:**
+━━━━━━━━━━━━━━━━━━━━
+• `вівторок 1 пара встав посилання https://zoom.us/...`
+• `понеділок 2 пара встав ссылку https://meet.google.com/...`
+• `середа 1 пара зміни ссылку на https://...`
+
+**Формат:** `[день] [номер] пара встав ссылку [URL]`
+
+━━━━━━━━━━━━━━━━━━━━
+**Видалити посилання / дані підключення:**
+━━━━━━━━━━━━━━━━━━━━
+• `вівторок 1 пара видали посилання`
+• `понеділок 2 пара удали данные подключения`
+• `середа 1 пара прибери лінк`
+
+**Формат:** `[день] [номер] пара видали посилання`
+
+━━━━━━━━━━━━━━━━━━━━
+**Видалити пару:**
+━━━━━━━━━━━━━━━━━━━━
+• `видали 1 пару у вівторок`
+• `удали матан в понеділок`
+• `видали англійську в середу непарного тижня`
+
+━━━━━━━━━━━━━━━━━━━━
+**Поміняти пари місцями:**
+━━━━━━━━━━━━━━━━━━━━
+• `поміняй місцями 1 і 2 пару в понеділок`
+
+━━━━━━━━━━━━━━━━━━━━
+**Відновити видалену пару:**
+━━━━━━━━━━━━━━━━━━━━
+• `поверни видалену пару`
+• `відновити`
+
+━━━━━━━━━━━━━━━━━━━━
+**Комбіновані команди:**
+━━━━━━━━━━━━━━━━━━━━
+• `видали матан у вівторок і покажи розклад на вівторок`
+• `додай 3 пару і виведи тиждень`
+
+━━━━━━━━━━━━━━━━━━━━
+**Поради для точності:**
+━━━━━━━━━━━━━━━━━━━━
+1. Завжди вказуй **день** та **номер пари**
+2. Для ссилок — пиши номер пари + "встав ссылку" + URL
+3. Для видалення ссилок — "видали посилання" або "удали ссылку"
+4. Можна писати українською або російською"""
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
 # ==========================================
 # ЗАПУСК ТА ВЕБХУК
 # ==========================================
@@ -1391,6 +1542,7 @@ async def lifespan(app: Flask):
     application.add_handler(CommandHandler("manage", manage_command))
     application.add_handler(CommandHandler("today", today_command))
     application.add_handler(CommandHandler("randomfact", randomfact_command))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_text_handler))
 
     await application.initialize()
