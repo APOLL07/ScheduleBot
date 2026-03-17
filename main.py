@@ -264,6 +264,221 @@ def delete_pair_by_name(user_id: int, day: str, name_keywords) -> int:
         conn.commit()
     return deleted
 
+# ==========================================
+# ЛОКАЛЬНИЙ ПАРСЕР РОЗКЛАДУ (без AI)
+# ==========================================
+FULL_SCHEDULE_DAY_HEADERS = {
+    "ПОНЕДІЛОК": "понеділок",
+    "ВІВТОРОК": "вівторок",
+    "СЕРЕДА": "середа",
+    "ЧЕТВЕР": "четвер",
+    "П'ЯТНИЦЯ": "п'ятниця",
+    "ПЯТНИЦЯ": "п'ятниця",
+}
+
+def is_full_schedule_text(text: str) -> bool:
+    """Перевіряє чи текст містить повний розклад (мінімум 3 заголовки днів)."""
+    upper = text.upper()
+    count = sum(1 for header in FULL_SCHEDULE_DAY_HEADERS if header in upper)
+    return count >= 3
+
+def parse_full_schedule_locally(text: str) -> list:
+    """
+    Парсить повний розклад з тексту та повертає список db_actions.
+    Повертає [{"action": "DELETE_ALL"}, {"action": "ADD", "data": {...}}, ...]
+    """
+    actions = [{"action": "DELETE_ALL"}]
+
+    # Розбиваємо текст на блоки по днях
+    # Шукаємо заголовки днів та їх позиції
+    day_positions = []
+    upper_text = text.upper()
+    for header, day_ukr in FULL_SCHEDULE_DAY_HEADERS.items():
+        # Знаходимо всі входження заголовка (на окремому рядку або на початку)
+        for m in re.finditer(r'(?:^|\n)\s*' + re.escape(header) + r'\s*(?:\n|$)', upper_text):
+            day_positions.append((m.start(), day_ukr))
+
+    # Сортуємо за позицією в тексті
+    day_positions.sort(key=lambda x: x[0])
+
+    # Розбиваємо текст на блоки
+    day_blocks = []
+    for i, (pos, day_ukr) in enumerate(day_positions):
+        if i + 1 < len(day_positions):
+            block_text = text[pos:day_positions[i + 1][0]]
+        else:
+            block_text = text[pos:]
+        day_blocks.append((day_ukr, block_text))
+
+    for day_ukr, block in day_blocks:
+        _parse_day_block(day_ukr, block, actions)
+
+    return actions
+
+def _parse_day_block(day_ukr: str, block: str, actions: list):
+    """Парсить один день та додає ADD-дії до actions."""
+    day_eng_map = {v: k for k, v in AI_TO_DB_DAYS.items()}
+    day_eng = day_eng_map.get(day_ukr, "Monday")
+
+    lines = block.split('\n')
+
+    # Знаходимо пари
+    current_pair_order = None
+    current_lines = []
+
+    for line in lines:
+        # Перевіряємо чи це початок нової пари
+        pair_match = re.match(r'^\s*(\d+)\s*пара\s*[:\-]?\s*(.*)', line, re.IGNORECASE)
+        if pair_match:
+            # Зберігаємо попередню пару
+            if current_pair_order is not None:
+                _process_pair_lines(day_eng, current_pair_order, current_lines, actions)
+            current_pair_order = int(pair_match.group(1))
+            rest = pair_match.group(2).strip()
+            current_lines = [rest] if rest else []
+        elif current_pair_order is not None:
+            current_lines.append(line.strip())
+
+    # Зберігаємо останню пару
+    if current_pair_order is not None:
+        _process_pair_lines(day_eng, current_pair_order, current_lines, actions)
+
+def _process_pair_lines(day_eng: str, order: int, lines: list, actions: list):
+    """Обробляє рядки однієї пари та створює ADD-дії."""
+    # Об'єднуємо всі рядки
+    full_text = '\n'.join(lines).strip()
+
+    if not full_text or full_text.lower() == 'пусто':
+        return
+
+    # Перевіряємо чи є умовні пари (Якщо X-Y тип, то назва)
+    conditional_pattern = r'Якщо\s+(\d+)-(\d+)\s+(\S+)\s*,?\s*то\s+(.+?)(?=\nЯкщо|\Z)'
+    conditionals = list(re.finditer(conditional_pattern, full_text, re.DOTALL | re.IGNORECASE))
+
+    if conditionals:
+        for match in conditionals:
+            start_week = int(match.group(1))
+            # type_str = match.group(3)  # лабораторна/практика/лекція
+            rest_text = match.group(4).strip()
+
+            # Визначаємо тиждень: парне число = even, непарне = odd
+            if start_week % 2 == 0:
+                week = "even"
+            else:
+                week = "odd"
+
+            subject, link = _extract_subject_and_link(rest_text)
+            if subject:
+                actions.append({
+                    "action": "ADD",
+                    "data": {
+                        "day": day_eng,
+                        "order": order,
+                        "week": week,
+                        "subject": subject.strip(),
+                        "link": link
+                    }
+                })
+    else:
+        # Звичайна пара (без умов)
+        # Перевіряємо формат: (1-15 тип) Назва - Викладач LINK
+        subject, link = _extract_subject_and_link_from_regular(full_text)
+        if subject:
+            # Визначаємо тиждень
+            week_match = re.search(r'\((\d+)-(\d+)\s+\S+\)', full_text)
+            week = "both"
+            if week_match:
+                # Якщо є (X-Y тип) без "Якщо" — це "both" (кожна)
+                week = "both"
+
+            actions.append({
+                "action": "ADD",
+                "data": {
+                    "day": day_eng,
+                    "order": order,
+                    "week": week,
+                    "subject": subject.strip(),
+                    "link": link
+                }
+            })
+
+def _extract_subject_and_link(text: str) -> tuple:
+    """Витягує назву предмета та посилання з тексту після 'то'."""
+    lines = text.strip().split('\n')
+    subject_line = lines[0].strip()
+    link = "None"
+
+    # Шукаємо URL у всіх рядках
+    all_text = '\n'.join(lines)
+    url_match = re.search(r'(https?://\S+)', all_text)
+    if url_match:
+        link = url_match.group(1)
+        # Видаляємо URL з subject_line якщо він там
+        subject_line = subject_line.replace(link, '').strip()
+
+    # Шукаємо "№: ... Код доступа: ..." у всіх рядках
+    code_match = re.search(r'(№\s*:\s*[\d\s]+(?:Код\s*доступ[аu]\s*:\s*\S+)?)', all_text, re.IGNORECASE)
+    if code_match:
+        if link == "None":
+            link = code_match.group(1).strip()
+        else:
+            link = link + " " + code_match.group(1).strip()
+        subject_line = subject_line.replace(code_match.group(1), '').strip()
+
+    # Видаляємо classroom/zoom info з subject
+    subject_line = re.sub(r'https?://\S+', '', subject_line).strip()
+    subject_line = re.sub(r'№\s*:\s*[\d\s]+.*$', '', subject_line).strip()
+
+    # Прибираємо trailing дефіс або крапку
+    subject_line = subject_line.rstrip(' -.,')
+
+    return subject_line if subject_line else None, link
+
+def _extract_subject_and_link_from_regular(text: str) -> tuple:
+    """Витягує назву та посилання зі звичайної пари (без умов)."""
+    # Видаляємо частину (1-15 тип)
+    cleaned = re.sub(r'\(\d+-\d+\s+\S+\)\s*', '', text, count=1).strip()
+
+    lines = cleaned.split('\n')
+    first_line = lines[0].strip()
+    all_text = '\n'.join(lines)
+
+    link = "None"
+
+    # Шукаємо URL
+    url_match = re.search(r'(https?://\S+)', all_text)
+    if url_match:
+        link = url_match.group(1)
+
+    # Шукаємо "№: ... Код доступа: ..."
+    code_match = re.search(r'(№\s*:\s*[\d\s]+(?:Код\s*доступ[аu]\s*:\s*\S+)?)', all_text, re.IGNORECASE)
+    if code_match:
+        code_info = code_match.group(1).strip()
+        if link == "None":
+            link = code_info
+        else:
+            link = link + " " + code_info
+
+    # Шукаємо "Код доступа: ..." окремо (може бути без №)
+    kod_match = re.search(r'Код\s*доступ[аu]\s*:\s*(\S+)', all_text, re.IGNORECASE)
+    if kod_match:
+        kod_full = kod_match.group(0).strip()
+        if kod_full not in (link or ""):
+            if link == "None":
+                link = kod_full
+            else:
+                link = link + " " + kod_full
+
+    # Прибираємо URL і коди з назви предмета
+    subject = first_line
+    subject = re.sub(r'https?://\S+', '', subject).strip()
+    subject = re.sub(r'№\s*:.*$', '', subject).strip()
+    subject = re.sub(r'Код\s*доступ[аu]\s*:.*$', '', subject, flags=re.IGNORECASE).strip()
+    subject = subject.rstrip(' -.,')
+
+    return subject if subject else None, link
+
+
 def execute_db_actions(user_id: int, actions_list):
     processed_count = 0
     if not isinstance(actions_list, list): return 0
@@ -608,6 +823,30 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "swap", "move",
     ]
     has_action = any(kw in text_lower for kw in ACTION_KEYWORDS)
+
+    # ===========================================================
+    # ПЕРЕХВАТ ПОВНОГО РОЗКЛАДУ — локальний парсер (без AI)
+    # ===========================================================
+    if is_full_schedule_text(text):
+        processing_msg = await update.message.reply_text("⏳ Оброблюю розклад...")
+        try:
+            db_actions = parse_full_schedule_locally(text)
+            changes_count = execute_db_actions(ADMIN_ID, db_actions)
+
+            now_dt = datetime.now(TIMEZONE)
+            cw = "парний" if get_current_week_type() == "парна" else "непарний"
+            pairs = get_schedule_for_current_week(ADMIN_ID, now_dt.date() - timedelta(days=now_dt.weekday()))
+
+            reply = f"✅ Розклад успішно оновлено.\n\n⚙️ _Виконано дій з базою: {changes_count}_"
+            await processing_msg.edit_text(reply, parse_mode="Markdown")
+
+            # Показуємо оновлений розклад
+            msg = format_pairs_message(pairs, f"🗓️ Розклад на **{cw.upper()}** тиждень")
+            await update.message.reply_text(msg, parse_mode="Markdown", disable_web_page_preview=True)
+        except Exception as e:
+            print(f"Помилка локального парсера: {e}")
+            await processing_msg.edit_text(f"❌ Помилка парсингу розкладу: {e}")
+        return
 
     # ===========================================================
     # SMART INTERCEPTOR v3: segment-based, fixes парн/непарн bug
