@@ -7,8 +7,8 @@ import psycopg2
 import psycopg2.extras
 import pytz
 from flask import Flask, request as flask_request, abort, jsonify
-from telegram import Bot, Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.constants import ChatAction
 from datetime import datetime, time, timedelta
 from asgiref.wsgi import WsgiToAsgi
@@ -172,19 +172,22 @@ async def generate_unique_fact(user_id: int) -> str:
     history = get_recent_facts(user_id)
     history_str = "\n".join(f"- {f}" for f in history) if history else "Немає історії."
 
-    prompt = f"""Розкажи ОДИН дуже цікавий, маловідомий факт про архітектуру ПК, мережі, кібербезпеку або програмування.
-    Пиши суто текст, без форматування і без довгих вступів.
-    ЗАБОРОНЕНІ ФАКТИ (користувач їх вже знає):
+    prompt = f"""Ти — бот-асистент. Твоя єдина задача: відповісти ОДНИМ коротким фактом.
+    ЗАБОРОНЕНО: заголовки, нумерація, markdown, кілька фактів, фрази типу "Новий факт", "Правильний факт", "Цікавий факт:".
+    Пиши лише сам факт — одним абзацем, чистим текстом, без жодного форматування.
+    ЗАБОРОНЕНІ ТЕМИ (користувач їх вже знає):
     {history_str}"""
 
     try:
         response = await ai_client.chat(
-            message="Сгенеруй цікавий ІТ-факт.",
+            message="Один маловідомий цікавий факт про ІТ (архітектура ПК, мережі, кібербезпека або програмування). Тільки текст факту, без заголовків і без markdown.",
             preamble=prompt,
             model="command-a-03-2025",
             temperature=0.7
         )
         fact = response.text.strip()
+        # Якщо модель все одно згенерувала кілька фактів — беремо лише перший
+        fact = re.split(r'\n\n\*\*|\n\*\*[^\n]*(факт|fact)', fact, flags=re.IGNORECASE)[0].strip()
         save_fact(user_id, fact)
         return fact
     except Exception as e:
@@ -810,7 +813,10 @@ async def check_and_send_reminders(bot: Bot):
                             fact = await generate_unique_fact(user_id)
                             # Перше повідомлення — нагадування з посиланням
                             msg = f"🔔 **Нагадування!**\n\nЧерез {REMIND_BEFORE_MINUTES} хвилин ({pair['time']}) почнеться пара:\n**{pair['name']}**{link_msg}"
-                            await bot.send_message(user_id, msg, parse_mode="Markdown", disable_web_page_preview=True)
+                            keyboard = InlineKeyboardMarkup([[
+                                InlineKeyboardButton("🔕 Відписатись від сповіщень", callback_data="unsubscribe")
+                            ]])
+                            await bot.send_message(user_id, msg, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=keyboard)
                             # Друге повідомлення — окремо ІТ-факт
                             await bot.send_message(user_id, f"💡 **Цікавий ІТ-факт:**\n\n_{fact}_", parse_mode="Markdown")
                             mark_as_notified(notification_key)
@@ -1418,10 +1424,16 @@ def add_user_if_not_exists(user_id: int, username: str):
         with conn.cursor() as cursor: cursor.execute(sql, (user_id, username))
         conn.commit()
 
+def set_subscription(user_id: int, status: int):
+    with get_db_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE users SET subscribed = %s WHERE user_id = %s", (status, user_id))
+        conn.commit()
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     add_user_if_not_exists(user.id, user.username)
-    text = "Привіт!\nЯ твій розумний AI-асистент з розкладу.\n\n/all - Розклад на тиждень\n/today - На сьогодні\n/randomfact - Отримати ІТ-факт"
+    text = "Привіт!\nЯ твій розумний AI-асистент з розкладу.\n\n/all - Розклад на тиждень\n/today - На сьогодні\n/randomfact - Отримати ІТ-факт\n/unsubscribe - Вимкнути сповіщення\n/subscribe - Увімкнути сповіщення"
     if user.id in ADMIN_IDS:
         text += "\n/help - Повна довідка з управління"
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -1453,6 +1465,32 @@ async def randomfact_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.chat.send_action(ChatAction.TYPING)
     fact = await generate_unique_fact(update.effective_user.id)
     await update.message.reply_text(f"🎲 **Цікавий ІТ-факт:**\n\n{fact}", parse_mode="Markdown")
+
+async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    add_user_if_not_exists(user_id, update.effective_user.username)
+    set_subscription(user_id, 0)
+    await update.message.reply_text(
+        "🔕 Ти відписаний від сповіщень.\n\nЩоб знову отримувати нагадування — /subscribe"
+    )
+
+async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    add_user_if_not_exists(user_id, update.effective_user.username)
+    set_subscription(user_id, 1)
+    await update.message.reply_text(
+        "🔔 Сповіщення увімкнено! Ти отримуватимеш нагадування перед парами."
+    )
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "unsubscribe":
+        set_subscription(query.from_user.id, 0)
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(
+            "🔕 Відписаний від сповіщень.\n\nЩоб повернути — /subscribe"
+        )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS: return
@@ -1545,7 +1583,10 @@ async def lifespan(app: Flask):
     application.add_handler(CommandHandler("manage", manage_command))
     application.add_handler(CommandHandler("today", today_command))
     application.add_handler(CommandHandler("randomfact", randomfact_command))
+    application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
+    application.add_handler(CommandHandler("subscribe", subscribe_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_text_handler))
 
     await application.initialize()
