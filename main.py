@@ -9,7 +9,6 @@ import pytz
 from flask import Flask, request as flask_request, abort, jsonify
 from telegram import Bot, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from telegram.constants import ChatAction
 from datetime import datetime, time, timedelta
 from asgiref.wsgi import WsgiToAsgi
 from contextlib import asynccontextmanager
@@ -22,6 +21,8 @@ load_dotenv()
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 COHERE_API_KEY = os.environ.get("COHERE_API_KEY")
 
@@ -65,7 +66,7 @@ ai_client = cohere.AsyncClient(COHERE_API_KEY) if COHERE_API_KEY else None
 # БАЗА ДАНИХ ТА ІСТОРІЯ ФАКТІВ
 # ==========================================
 def get_db_conn():
-    return psycopg2.connect(DATABASE_URL, sslmode='disable', cursor_factory=psycopg2.extras.DictCursor)
+    return psycopg2.connect(DATABASE_URL, sslmode='require', cursor_factory=psycopg2.extras.DictCursor)
 
 def init_db():
     if not DATABASE_URL: return
@@ -80,9 +81,6 @@ def init_db():
                                  (user_id BIGINT PRIMARY KEY, username TEXT, subscribed INTEGER DEFAULT 1)''')
                 cursor.execute('''CREATE TABLE IF NOT EXISTS sent_notifications
                                  (notification_key TEXT PRIMARY KEY, sent_at TIMESTAMP WITH TIME ZONE NOT NULL)''')
-                cursor.execute('''CREATE TABLE IF NOT EXISTS user_facts
-                                 (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL, fact_summary TEXT NOT NULL,
-                                  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)''')
                 cursor.execute('''CREATE TABLE IF NOT EXISTS deleted_pairs
                                  (id SERIAL PRIMARY KEY, user_id BIGINT NOT NULL, day TEXT NOT NULL,
                                   time TEXT NOT NULL, name TEXT NOT NULL, link TEXT,
@@ -146,52 +144,6 @@ def format_deleted_pairs_for_prompt(pairs: list) -> str:
         lines.append(f"- {p['day'].capitalize()}, пара {p['pair_order']}, {p['time']}, {p['name']}, тиждень: {p['week_type']}, link: {p['link']}")
     return "\n".join(lines)
 
-
-# Функції для роботи з фактами
-def get_recent_facts(user_id: int):
-    try:
-        with get_db_conn() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT fact_summary FROM user_facts WHERE user_id = %s ORDER BY id DESC LIMIT 15", (user_id,))
-                return [row[0] for row in cursor.fetchall()]
-    except Exception:
-        return []
-
-def save_fact(user_id: int, fact_summary: str):
-    try:
-        with get_db_conn() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("INSERT INTO user_facts (user_id, fact_summary) VALUES (%s, %s)", (user_id, fact_summary[:100]))
-            conn.commit()
-    except Exception as e:
-        print(f"Помилка збереження факту: {e}")
-
-async def generate_unique_fact(user_id: int) -> str:
-    if not ai_client: return "Cohere API не підключено."
-
-    history = get_recent_facts(user_id)
-    history_str = "\n".join(f"- {f}" for f in history) if history else "Немає історії."
-
-    prompt = f"""Ти — бот-асистент. Твоя єдина задача: відповісти ОДНИМ коротким фактом.
-    ЗАБОРОНЕНО: заголовки, нумерація, markdown, кілька фактів, фрази типу "Новий факт", "Правильний факт", "Цікавий факт:".
-    Пиши лише сам факт — одним абзацем, чистим текстом, без жодного форматування.
-    ЗАБОРОНЕНІ ТЕМИ (користувач їх вже знає):
-    {history_str}"""
-
-    try:
-        response = await ai_client.chat(
-            message="Один маловідомий цікавий факт про ІТ (архітектура ПК, мережі, кібербезпека або програмування). Тільки текст факту, без заголовків і без markdown.",
-            preamble=prompt,
-            model="command-a-03-2025",
-            temperature=0.7
-        )
-        fact = response.text.strip()
-        # Якщо модель все одно згенерувала кілька фактів — беремо лише перший
-        fact = re.split(r'\n\n\*\*|\n\*\*[^\n]*(факт|fact)', fact, flags=re.IGNORECASE)[0].strip()
-        save_fact(user_id, fact)
-        return fact
-    except Exception as e:
-        return "Не вдалося згенерувати факт."
 
 # ==========================================
 # ФУНКЦІЇ РОБОТИ З БД
@@ -810,15 +762,11 @@ async def check_and_send_reminders(bot: Bot):
                                 else:
                                     link_msg = f"\n\nℹ️ Дані підключення:\n`{link_str}`"
 
-                            fact = await generate_unique_fact(user_id)
-                            # Перше повідомлення — нагадування з посиланням
                             msg = f"🔔 **Нагадування!**\n\nЧерез {REMIND_BEFORE_MINUTES} хвилин ({pair['time']}) почнеться пара:\n**{pair['name']}**{link_msg}"
                             keyboard = InlineKeyboardMarkup([[
                                 InlineKeyboardButton("🔕 Відписатись від сповіщень", callback_data="unsubscribe")
                             ]])
                             await bot.send_message(user_id, msg, parse_mode="Markdown", disable_web_page_preview=True, reply_markup=keyboard)
-                            # Друге повідомлення — окремо ІТ-факт
-                            await bot.send_message(user_id, f"💡 **Цікавий ІТ-факт:**\n\n_{fact}_", parse_mode="Markdown")
                             mark_as_notified(notification_key)
                 except Exception:
                     pass
@@ -986,17 +934,11 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     TODAY_KW = [
         "сьогодні", "сегодня",
     ]
-    FACT_KW = [
-        "факт", "факти", "fact",
-    ]
-
     def classify_segment(seg: str):
         """
-        Returns one of: 'today', 'tomorrow', 'week', 'day', 'fact', 'ai'
+        Returns one of: 'today', 'tomorrow', 'week', 'day', 'ai'
         """
         s = seg.lower()
-        if any(kw in s for kw in FACT_KW):
-            return "fact"
         if any(kw in s for kw in TOMORROW_KW):
             return "tomorrow"
         if any(kw in s for kw in TODAY_KW):
@@ -1028,15 +970,11 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         segments = split_segments(text_lower)
         ai_segments = []
         schedule_tasks = []  # list of async callables
-        has_fact_request = False
 
         for seg in segments:
             kind = classify_segment(seg)
 
-            if kind == "fact":
-                has_fact_request = True
-
-            elif kind == "tomorrow":
+            if kind == "tomorrow":
                 wtype = detect_week_type(seg)
                 async def _send_tomorrow(wt=wtype):
                     now_dt = datetime.now(TIMEZONE)
@@ -1098,17 +1036,9 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for task in schedule_tasks:
             await task()
 
-        # Якщо є запит на факт — генеруємо і надсилаємо
-        if has_fact_request:
-            fact = await generate_unique_fact(user_id)
-            await update.message.reply_text(
-                "🎲 **Цікавий ІТ-факт:**\n\n" + fact,
-                parse_mode="Markdown"
-            )
-
         # Якщо є завдання для AI — продовжуємо (не робимо return)
         # Якщо немає — зупиняємось
-        if not ai_segments and (schedule_tasks or has_fact_request):
+        if not ai_segments and schedule_tasks:
             return
 
         # Якщо є AI-сегменти — збираємо їх і відправляємо до AI
@@ -1186,7 +1116,6 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ПОВЕРТАЙ ВИКЛЮЧНО ВАЛІДНИЙ JSON (без зайвого тексту, без markdown-блоків):
     {{
       "reply": "Відповідь ТІЛЬКИ УКРАЇНСЬКОЮ...",
-      "give_fact": false,
       "show_schedule": null,
       "db_actions": []
     }}
@@ -1196,10 +1125,8 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ============================================================
     1. Привітання ("Привіт", "Доброго дня") → відповідай у "reply", db_actions порожній.
     2. Загальні питання НЕ по розкладу ("що таке бекенд", "погода") →
-       reply: "Я можу лише керувати розкладом та видавати ІТ-факти."
-    3. Факти ("цікавий факт", "дай факт", "рандомний факт", "random fact") → "give_fact": true, reply: ""
-       ВАЖЛИВО: якщо give_fact=true — поле "reply" ЗАВЖДИ порожній рядок "". Факт буде доданий автоматично.
-    4. Питання про розклад ("яка перша пара", "що є в середу") → відповідай з даних вище.
+       reply: "Я можу лише керувати розкладом."
+    3. Питання про розклад ("яка перша пара", "що є в середу") → відповідай з даних вище.
 
     ============================================================
     МУЛЬТИЗАДАЧНІСТЬ (show_schedule):
@@ -1357,7 +1284,6 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ai_json = json.loads(clean_json)
 
         reply_text = ai_json.get("reply", "")
-        give_fact = ai_json.get("give_fact", False)
         db_actions = ai_json.get("db_actions", [])
         show_schedule = ai_json.get("show_schedule", None)  # "today" | "tomorrow" | "week" | "day:назва_дня"
 
@@ -1367,14 +1293,6 @@ async def ai_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         final_message = reply_text
         if changes_count > 0:
             final_message += f"\n\n⚙️ _Виконано дій з базою: {changes_count}_"
-
-        if give_fact:
-            fact = await generate_unique_fact(user_id)
-            fact_block = f"🎲 **Цікавий ІТ-факт:**\n\n{fact}"
-            if final_message.strip():
-                final_message += f"\n\n{fact_block}"
-            else:
-                final_message = fact_block
 
         await processing_msg.edit_text(final_message, parse_mode="Markdown", disable_web_page_preview=True)
 
@@ -1433,7 +1351,7 @@ def set_subscription(user_id: int, status: int):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     add_user_if_not_exists(user.id, user.username)
-    text = "Привіт!\nЯ твій розумний AI-асистент з розкладу.\n\n/all - Розклад на тиждень\n/today - На сьогодні\n/randomfact - Отримати ІТ-факт\n/unsubscribe - Вимкнути сповіщення\n/subscribe - Увімкнути сповіщення"
+    text = "Привіт!\nЯ твій розумний AI-асистент з розкладу.\n\n/all - Розклад на тиждень\n/today - На сьогодні\n/unsubscribe - Вимкнути сповіщення\n/subscribe - Увімкнути сповіщення"
     if user.id in ADMIN_IDS:
         text += "\n/help - Повна довідка з управління"
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -1460,11 +1378,6 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pairs = get_pairs_for_day(current_day_name, current_week)
     title = f"🔵 На сьогодні ({current_day_name.capitalize()}, {'парний' if current_week == 'парна' else 'непарний'} тиждень)"
     await update.message.reply_text(format_pairs_message(pairs, title), parse_mode="Markdown", disable_web_page_preview=True)
-
-async def randomfact_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.chat.send_action(ChatAction.TYPING)
-    fact = await generate_unique_fact(update.effective_user.id)
-    await update.message.reply_text(f"🎲 **Цікавий ІТ-факт:**\n\n{fact}", parse_mode="Markdown")
 
 async def unsubscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1500,7 +1413,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /today — розклад на сьогодні
 /all — розклад на тиждень
 /manage — всі пари з ID
-/randomfact — ІТ-факт
 /help — ця довідка
 
 ━━━━━━━━━━━━━━━━━━━━
@@ -1582,7 +1494,6 @@ async def lifespan(app: Flask):
     application.add_handler(CommandHandler("all", all_command))
     application.add_handler(CommandHandler("manage", manage_command))
     application.add_handler(CommandHandler("today", today_command))
-    application.add_handler(CommandHandler("randomfact", randomfact_command))
     application.add_handler(CommandHandler("unsubscribe", unsubscribe_command))
     application.add_handler(CommandHandler("subscribe", subscribe_command))
     application.add_handler(CommandHandler("help", help_command))
